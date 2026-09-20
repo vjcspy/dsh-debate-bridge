@@ -1,0 +1,32 @@
+# dsh-debate-bridge bundle patch: mounts the plugin on the host plane under
+# the stable id `dsh-debate-bridge`. The plugin registers no tool of its own
+# and contributes no UI half — the GUI surface is the Session it creates.
+#
+# It provides one capability: a loopback-only HTTP bridge the debate server's
+# `dsh` opponent provider calls. Three routes, all OUTSIDE `/api` so no cookie
+# or Origin fence applies (the fence is applied per-channel in
+# `HostConnectionService` and the mux upgrade, not globally):
+#
+#   POST /dsh-debate/opponent         { debateId, sessionId?, title, prompt,
+#                                       model?, agentPreset, permissionPreset,
+#                                       workspacePath } -> { sessionId }
+#   POST /dsh-debate/opponent/stop    { sessionId } -> { stopped }
+#   POST /dsh-debate/opponent/status  { sessionId } -> { live, idle, lastActivityAt }
+#
+# The start verb creates the Session IN PROCESS — `workspaceRegistry.create` ->
+# `agents.create({ sessionId, meta: { cwd: workspace.path } })` ->
+# `workspace.attachSession` -> `permissionPresets.set` -> `sessionTitle.rename`
+# -> `agent.followup` — so the Session lands in the same in-memory SessionStore
+# the Web GUI reads and `session/created` -> `api-session/added` fires. A
+# Session written by another process would surface only as a cold row after a
+# refresh and could not be adopted while live (`session/writer-held`).
+#
+# There is no `config` row: every input arrives in the request body. Before
+# registering anything the plugin reads the resolved `webServer.host` and
+# refuses to register unless it is exactly `127.0.0.1`, because these routes
+# accept an arbitrary prompt, an arbitrary workspace path and a
+# `danger-full-access` preset.
+
+- insert:
+    - id: dsh-debate-bridge
+      name: 'dsh-debate-bridge'
