@@ -144,6 +144,7 @@ describe('dependency symmetry', () => {
       'permissionPresets',
       'sessionTitle',
       'agentDefaultModel',
+      'llm',
     ])
     // Present as a link because the plugin reads it — but NOT required at
     // activation: a deployment without it must still register the routes.
@@ -152,5 +153,10 @@ describe('dependency symmetry', () => {
     // Required, by contrast: it is the only source of a complete provider+model
     // route, and a session created without one dies on its first turn.
     expect(manifest.peerDependencies['@deepseek-ai/dsh-agent-default-model']).toBeDefined()
+    // Also required, for a mechanical reason: the models verb forwards `ctx` to
+    // `buildModelCatalog`, which dereferences `ctx.llm`, and Cordis refuses an
+    // uninjected service with `cannot get property "llm" without inject` — so no
+    // optional-read trick can stand in for the inject.
+    expect(manifest.peerDependencies['@deepseek-ai/dsh-llm']).toBeDefined()
   })
 })

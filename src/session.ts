@@ -167,6 +167,24 @@ export type RouteResolution =
   | { readonly ok: false; readonly error: string }
 
 /**
+ * The seam {@link resolveModelRoute} needs to check a route against the host's
+ * live LLM registry.
+ *
+ * Passed IN rather than reached through `Context` so the resolver stays a pure
+ * function with a fakeable host in tests. `null` means "this deployment mounts no
+ * `llm` service", which skips the check rather than refusing every request.
+ */
+export interface RouteHost {
+  /**
+   * Ask the host whether this exact route can serve a request.
+   * @param provider - provider id half of the route.
+   * @param model - model id half of the route.
+   * @returns the refusal reason, or `null` when the route is routable.
+   */
+  checkRoute(provider: string, model: string): Promise<string | null>
+}
+
+/**
  * Resolve the session's complete model route, fail closed.
  *
  * Both `provider` AND `model` are mandatory: the agent loop refuses to run a turn
@@ -182,17 +200,31 @@ export type RouteResolution =
  * The post-resolution blank check is the safety net: it makes the
  * `prompt variable "{{model}}" has no value` crash unreachable, because a session
  * whose route is incomplete is never created at all.
+ *
+ * `host` adds the ONE check the harness itself does not perform. Session
+ * creation accepts any route and the agent loop *swallows* `NO_ADAPTER`
+ * (`packages/core/agent-loop/src/agent.ts:536-548`), so a typo'd provider id
+ * would otherwise produce a green 200 followed by a session that silently does
+ * nothing. Only the PROVIDER half is checked: the model catalog is documented
+ * ADVISORY ("an adapter may accept unlisted model ids, and consumers must not
+ * turn absence into request rejection", `packages/llm/llm/src/index.ts`), so an
+ * unlisted model id stays the model's own business.
  * @param ctx - host context carrying the live `agentDefaultModel` service.
  * @param request - validated request; `model` is absent when the caller wants the default.
+ * @param host - optional live-registry check; omit in a deployment without `llm`.
  * @returns the complete route, or one machine-readable reason.
  */
-export function resolveModelRoute(ctx: Context, request: StartRequest): RouteResolution {
+export async function resolveModelRoute(
+  ctx: Context,
+  request: StartRequest,
+  host: RouteHost | null = null,
+): Promise<RouteResolution> {
   // Blank is "absent", not a route: a blank value would otherwise travel to the
   // prompt template, which then dies on an empty `{{model}}` after a green 200.
   const route = request.model?.trim() ?? ''
   if (route === '') {
     const selected = ctx.agentDefaultModel.currentSelection()
-    return checkRoute(selected.provider, selected.model)
+    return checkRoute(selected.provider, selected.model, host)
   }
 
   const separator = route.indexOf('/')
@@ -203,7 +235,7 @@ export function resolveModelRoute(ctx: Context, request: StartRequest): RouteRes
         + ` (got ${JSON.stringify(route)}); omit model to use the host default`,
     }
   }
-  return checkRoute(route.slice(0, separator).trim(), route.slice(separator + 1).trim())
+  return checkRoute(route.slice(0, separator).trim(), route.slice(separator + 1).trim(), host)
 }
 
 /**
@@ -213,15 +245,30 @@ export function resolveModelRoute(ctx: Context, request: StartRequest): RouteRes
  * fix named, instead of creating a session whose every turn dies.
  * @param provider - candidate provider id.
  * @param model - candidate model id.
+ * @param host - optional live-registry check.
  * @returns the route, or one machine-readable reason.
  */
-function checkRoute(provider: string, model: string): RouteResolution {
+async function checkRoute(
+  provider: string,
+  model: string,
+  host: RouteHost | null,
+): Promise<RouteResolution> {
   if (provider === '' || model === '') {
     const missing = provider === '' ? 'provider' : 'model'
     return {
       ok: false,
       error: `no ${missing} is available for this session: set "dsh.model" as "provider/model" in the debate provider config, `
         + 'or give the host a default model (agent-default-model provider/model)',
+    }
+  }
+  if (host !== null) {
+    try {
+      const refusal = await host.checkRoute(provider, model)
+      if (refusal !== null) return { ok: false, error: refusal }
+    } catch (error: unknown) {
+      // A check that cannot run must not refuse a valid route. The check is a
+      // guard against a typo, not a precondition for creating the session.
+      return { ok: true, value: { provider, model } }
     }
   }
   return { ok: true, value: { provider, model } }

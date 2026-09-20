@@ -13,6 +13,7 @@ import { boot, patchFileText, post, startBody, type Composition } from './harnes
 const OPEN = '/dsh-debate/opponent'
 const STOP = '/dsh-debate/opponent/stop'
 const STATUS = '/dsh-debate/opponent/status'
+const MODELS = '/dsh-debate/models'
 
 let composition: Composition | undefined
 
@@ -56,6 +57,59 @@ test('the same three requests are ABSENT without the plugin entry (negative cont
     // the seat, so 404 is exactly "the bridge did not register".
     expect(response.status, `${path} must be absent`).toBe(404)
   }
+}, 60_000)
+
+test('the models verb answers a GET with the host catalog, and is absent without the plugin', async () => {
+  composition = await boot()
+
+  const response = await fetch(`http://127.0.0.1:${String(composition.port)}${MODELS}`)
+  expect(response.status).toBe(200)
+  const body = await response.json() as { models: { value: string; label: string }[]; failures: unknown[] }
+  // The projection mirrors the GUI picker's: `provider/model` as the value, and
+  // the model's own display name plus its provider as the label.
+  expect(body.models).toEqual([
+    { value: 'deepseek-official/deepseek-v4-flash', label: 'DeepSeek V4 Flash (deepseek-official)' },
+  ])
+  expect(body.failures).toEqual([])
+
+  // A POST to a GET-only verb is refused like the reverse case elsewhere.
+  const wrongMethod = await fetch(`http://127.0.0.1:${String(composition.port)}${MODELS}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  })
+  expect(wrongMethod.status).toBe(405)
+  expect(wrongMethod.headers.get('allow')).toBe('GET')
+
+  await composition.dispose()
+  composition = await boot({ withBridge: false })
+  const absent = await fetch(`http://127.0.0.1:${String(composition.port)}${MODELS}`)
+  expect(absent.status).toBe(404)
+}, 60_000)
+
+test('a provider whose catalog fails is isolated, and the failure is reported', async () => {
+  composition = await boot()
+  composition.llm.providers = [
+    { id: 'deepseek-official', name: 'DeepSeek Official', models: [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }] },
+    // A route whose adapter is registered but whose model discovery is broken.
+    { id: 'broken', name: 'Broken', models: [], brokenModels: true },
+  ]
+
+  const response = await fetch(`http://127.0.0.1:${String(composition.port)}${MODELS}`)
+  expect(response.status).toBe(200)
+  const body = await response.json() as {
+    models: { value: string }[]
+    failures: { id: string; name: string; message: string }[]
+  }
+
+  // One broken adapter must not take the whole catalog down: the healthy
+  // provider is still listed, and the failure is REPORTED rather than swallowed.
+  expect(body.models).toEqual([
+    { value: 'deepseek-official/deepseek-v4-flash', label: 'DeepSeek V4 Flash (deepseek-official)' },
+  ])
+  expect(body.failures).toHaveLength(1)
+  expect(body.failures[0]?.id).toBe('broken')
+  expect(body.failures[0]?.message).toContain('discovery failed')
 }, 60_000)
 
 test('only POST is accepted, and every refusal carries a machine-readable error body', async () => {

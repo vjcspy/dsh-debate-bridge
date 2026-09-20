@@ -10,6 +10,7 @@
  *   `POST /dsh-debate/opponent`         → `{ sessionId }`
  *   `POST /dsh-debate/opponent/stop`    → `{ stopped }`
  *   `POST /dsh-debate/opponent/status`  → `{ live, idle, lastActivityAt }`
+ *   `GET  /dsh-debate/models`           → `{ models, failures }`
  *
  * **The loopback self-check is load-bearing.** `ctx.webServer` accepts
  * `host: '0.0.0.0'` as a first-class config value
@@ -38,6 +39,7 @@ import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-workspace'
 import { errorChain } from '@deepseek-ai/dsh-llm'
+import { createRouteHost, listProviderModels } from './models.ts'
 import {
   parseJsonObject,
   parseStartRequest,
@@ -59,12 +61,25 @@ export const name = 'dsh-debate-bridge'
  * to activate without it is a loud failure in place of that silent one.
  *
  * `agentPresets` is deliberately NOT here: it is needed only to verify a
- * non-empty `agentPreset` name, so it is read through an optional `ctx.get()`
- * lookup. Making it a required `inject` would turn "this deployment does not
- * mount agent presets" into "the bridge never activates" — a worse failure than
- * refusing one request field, and one the caller can see.
+ * non-empty `agentPreset` name, so it is read through an optional lookup.
+ * Making it a required `inject` would turn "this deployment does not mount agent
+ * presets" into "the bridge never activates" — a worse failure than refusing one
+ * request field, and one the caller can see.
+ *
+ * `llm` IS required, and that is forced by the Cordis access guard rather than by
+ * preference: the models verb hands `ctx` to `buildModelCatalog`, which
+ * dereferences `ctx.llm.listProviders()` / `.listModels()` / `.resolveModelInfo()`
+ * (and `ctx.agentDefaultModel`), and the context proxy refuses any property whose
+ * service is not injected — measured on a real `web`-profile boot as
+ * `cannot get property "llm" without inject`. An UNGUARDED read
+ * (`ctx.reflect.get('llm', false)`) yields the service object, but the forwarded
+ * access still trips the guard, so no optional-read trick can substitute. The
+ * consequence is intended and explicit: a composition that mounts no LLM service
+ * must not mount this bridge, because such a host can neither enumerate model
+ * routes nor create a runnable session. The `web` profile mounts
+ * `@deepseek-ai/dsh-llm`.
  */
-export const inject = ['webServer', 'agents', 'workspaceRegistry', 'permissionPresets', 'sessionTitle', 'agentDefaultModel']
+export const inject = ['webServer', 'agents', 'workspaceRegistry', 'permissionPresets', 'sessionTitle', 'agentDefaultModel', 'llm']
 
 /** The only bind host on which these routes may be registered. */
 export const LOOPBACK_HOST = '127.0.0.1'
@@ -77,6 +92,16 @@ export const STOP_ROUTE = '/dsh-debate/opponent/stop'
 
 /** Exact path of the status verb. */
 export const STATUS_ROUTE = '/dsh-debate/opponent/status'
+
+/**
+ * Exact path of the model-catalog verb.
+ *
+ * A GET, unlike the three verbs above: it is a read with no body and no
+ * session-scoped effect, and it is the only route the debate server polls while an
+ * operator edits Settings. `GET /dsh-debate/opponent/models` would read as a
+ * per-session verb, which it is not.
+ */
+export const MODELS_ROUTE = '/dsh-debate/models'
 
 /**
  * Request-body ceiling. A body past it is refused after draining, never
@@ -221,6 +246,11 @@ export function apply(ctx: Context): void {
   // the routes and the status listeners even on a hot unload.
   ctx.effect(() => () => { sessions.dispose() }, 'dsh-debate-bridge.sessions()')
 
+  // Resolved ONCE per mount: the route check reads the host's live LLM registry
+  // (or is absent when this deployment mounts none), and neither changes while
+  // the plugin is mounted.
+  const routeHost = createRouteHost(ctx)
+
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: OPEN_ROUTE,
@@ -237,8 +267,10 @@ export function apply(ctx: Context): void {
         return
       }
       // Resolved BEFORE anything is created: a route the loop cannot run must
-      // refuse the request, never mint a session whose every turn dies.
-      const route = resolveModelRoute(ctx, request)
+      // refuse the request, never mint a session whose every turn dies. The
+      // provider half is checked against the host's live registry — the harness
+      // itself accepts any route and swallows `NO_ADAPTER`.
+      const route = await resolveModelRoute(ctx, request, routeHost)
       if (!route.ok) {
         sendJson(res, 400, { error: route.error })
         return
@@ -294,9 +326,36 @@ export function apply(ctx: Context): void {
       }
     },
   }), `dsh-debate-bridge: POST ${STATUS_ROUTE}`)
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: MODELS_ROUTE,
+    handler: async (req, res) => {
+      if (req.method !== 'GET') {
+        sendMethodNotAllowed(res, 'GET')
+        return
+      }
+      // A pure read with no body: unlike the three verbs above, there is nothing
+      // to validate and nothing to create. A host-side catalog problem is
+      // reported IN the body (with a 200), because the caller must still be able
+      // to open Settings and type a route by hand while the host is degraded.
+      try {
+        sendJson(res, 200, await listProviderModels(ctx))
+      } catch (error: unknown) {
+        // Unreachable (the reader catches internally) but kept so no code path
+        // can produce a thrown 500 without a machine-readable body.
+        sendJson(res, 200, {
+          models: [],
+          failures: [{ id: '', name: 'dsh', message: errorChain(error) }],
+        })
+      }
+    },
+  }), `dsh-debate-bridge: GET ${MODELS_ROUTE}`)
 }
 
-export type { OpenSessionInput, SessionStatus } from './session.ts'
+export type { OpenSessionInput, SessionStatus, RouteHost } from './session.ts'
+export type { ModelCatalogFailure, ModelCatalogResponse, ProviderModelOption } from './models.ts'
+export { createRouteHost, listProviderModels } from './models.ts'
 export type { StartRequest, StatusRequest, StopRequest } from './request.ts'
 export type { DebateOpponentSource } from './source.ts'
 export { DEBATE_OPPONENT_SOURCE_KIND } from './source.ts'

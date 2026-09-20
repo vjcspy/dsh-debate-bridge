@@ -119,6 +119,30 @@ export interface Composition {
    * mint a session whose every turn dies.
    */
   defaultModel: { provider: string; model: string }
+  /**
+   * The stub LLM registry the plugin reads for two purposes: the route check
+   * (`resolveCallConfig`) and the model catalog (`listProviders` +
+   * `listModels` + `resolveModelInfo`).
+   *
+   * `resolveCall` decides what `resolveCallConfig` does: `null` resolves, a code
+   * string throws an error carrying that `code` (so `NO_ADAPTER` can be
+   * reproduced), and `'absent'` removes the whole `llm` service from the context
+   * — the deployment the plugin must not refuse routes on.
+   */
+  llm: {
+    /**
+     * What `resolveCallConfig` does: `null` resolves, any other value throws an
+     * error carrying that `code` (so `NO_ADAPTER` is reproducible).
+     */
+    resolveCall: null | string
+    providers: Array<{
+      id: string
+      name: string
+      models: Array<{ id: string; name: string }>
+      /** Simulates an adapter whose model discovery fails. */
+      brokenModels?: boolean
+    }>
+  }
   dispose(): Promise<void>
 }
 
@@ -131,6 +155,11 @@ export function provide(ctx: Context, name: string, value: unknown): void {
 export interface BootOptions {
   /** Mount the bridge entry in the generated `cordis.yml`; default `true`. */
   readonly withBridge?: boolean
+  /**
+   * Publish the stub `llm` service; default `true`. `false` reproduces a
+   * deployment that mounts no LLM service, where the route check cannot run.
+   */
+  readonly withLlm?: boolean
 }
 
 /**
@@ -155,6 +184,14 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
     getAnswers: [],
     createThrows: undefined,
     defaultModel: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+    llm: {
+      resolveCall: null,
+      providers: [{
+        id: 'deepseek-official',
+        name: 'DeepSeek Official',
+        models: [{ id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }],
+      }],
+    },
     dispose: async () => { await rm(root, { recursive: true, force: true }) },
   }
 
@@ -229,6 +266,39 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
       return { ...composition.defaultModel }
     },
   })
+
+  // A stub LLM registry, delegated per call so a spec can re-script it after the
+  // mount (the plugin resolves the service ONCE at mount time).
+  const llmMethods = {
+    listProviders() {
+      record('llm.listProviders')
+      return composition.llm.providers.map(({ id, name }) => ({ id, name }))
+    },
+    async listModels(provider: string) {
+      record('llm.listModels', provider)
+      const found = composition.llm.providers.find((p) => p.id === provider)
+      if (found === undefined) throw new Error(`no adapter registered for provider "${provider}"`)
+      if (found.brokenModels === true) throw new Error(`model discovery failed for "${provider}"`)
+      return found.models.map((model) => ({ ...model }))
+    },
+    async resolveModelInfo(provider: string, model: string) {
+      record('llm.resolveModelInfo', { provider, model })
+      return { provider, id: model, name: model }
+    },
+    async resolveCallConfig(config: { provider: string; model: string }) {
+      record('llm.resolveCallConfig', config)
+      const scripted = composition.llm.resolveCall
+      if (scripted !== null && scripted !== 'absent') {
+        const error = new Error(`stub LlmError(${scripted})`) as Error & { code: string }
+        error.code = scripted
+        throw error
+      }
+      return config
+    },
+  }
+  // Mounted unless the spec asks for a deployment WITHOUT an LLM service: a host
+  // that mounts none cannot be asked about routes, and must not refuse them.
+  if (options.withLlm ?? true) provide(ctx, 'llm', llmMethods)
 
   // The real Loader over a real `cordis.yml`, importing the BUILT artifact.
   const built: unknown = await import(pathToFileURL(builtEntry).href)

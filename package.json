@@ -44,6 +44,7 @@
     "@deepseek-ai/dsh-agent": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-agent-default-model": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-agent-presets": ">=0.1.5-rc.1",
+    "@deepseek-ai/dsh-api-session-controller": ">=0.1.6-alpha.2",
     "@deepseek-ai/dsh-brand": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-host-webserver": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-llm": ">=0.1.5-rc.1",
@@ -64,6 +65,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-agent-presets": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-api-session-controller": {
       "optional": true
     },
     "@deepseek-ai/dsh-brand": {
@@ -98,6 +102,7 @@
     "@deepseek-ai/dsh-agent": "link:../deepseek-harness/packages/core/agent",
     "@deepseek-ai/dsh-agent-default-model": "link:../deepseek-harness/packages/core/agent-default-model",
     "@deepseek-ai/dsh-agent-presets": "link:../deepseek-harness/packages/preset/agent-presets",
+    "@deepseek-ai/dsh-api-session-controller": "link:../deepseek-harness/packages/api/session-controller",
     "@deepseek-ai/dsh-brand": "link:../deepseek-harness/packages/util/brand",
     "@deepseek-ai/dsh-host-webserver": "link:../deepseek-harness/packages/host/webserver",
     "@deepseek-ai/dsh-llm": "link:../deepseek-harness/packages/llm/llm",

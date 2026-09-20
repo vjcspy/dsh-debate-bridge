@@ -32,6 +32,7 @@ import { join } from 'node:path'
 const OPEN = '/dsh-debate/opponent'
 const STOP = '/dsh-debate/opponent/stop'
 const STATUS = '/dsh-debate/opponent/status'
+const MODELS = '/dsh-debate/models'
 
 /** The five mutating steps of the create path, in the mandated order. */
 const CREATE_SEQUENCE = [
@@ -265,6 +266,65 @@ test('idle is an observed status edge, never an elapsed-time predicate', async (
   expect(status.json['idle']).toBe(false)
 }, 60_000)
 
+test('an unknown provider route is refused 4xx, naming the routable providers', async () => {
+  composition = await boot()
+  composition.llm.resolveCall = 'NO_ADAPTER'
+
+  const refused = await post(composition, OPEN, startBody('noroute-1', { model: 'ghost/whatever' }))
+  expect(refused.status).toBe(400)
+  const error = String(refused.json['error'])
+  expect(error).toContain('no adapter registered')
+  expect(error).toContain('ghost')
+  // The refusal names the routes that DO work, so the operator can fix it.
+  expect(error).toContain('routable providers')
+  expect(error).toContain('deepseek-official')
+  // Fail CLOSED: nothing was created.
+  expect(composition.calls.some(call => call.what === 'agents.create')).toBe(false)
+}, 60_000)
+
+test('an UNLISTED model inside a known provider is accepted (the catalog is advisory)', async () => {
+  composition = await boot()
+  // `resolveCallConfig` resolves for a known provider even though
+  // `deepseek-official` advertises only `deepseek-v4-flash`. Absence from an
+  // advisory catalog must never become request rejection.
+  const opened = await post(composition, OPEN, startBody('unlisted-1', { model: 'deepseek-official/not-in-the-catalog' }))
+  expect(opened.status).toBe(200)
+  const create = composition.calls.find(call => call.what === 'agents.create')?.detail as {
+    agentOptions: { provider?: string; model?: string }
+  }
+  expect(create.agentOptions).toEqual({
+    provider: 'deepseek-official',
+    model: 'not-in-the-catalog',
+  })
+}, 60_000)
+
+test('a composition that mounts no llm service does NOT mount the bridge (loud, intended)', async () => {
+  // `llm` is a REQUIRED inject, forced by the Cordis access guard: the models verb
+  // hands `ctx` to `buildModelCatalog`, which dereferences `ctx.llm`, and a
+  // context without that service injected refuses the property outright. Such a
+  // host can neither enumerate model routes nor create a runnable session, so
+  // refusing to activate is the honest outcome — and it is observable here as
+  // "the routes never registered" rather than as an empty catalog.
+  const built: unknown = await import(pathToFileURL(builtEntry).href)
+  const ctx = new Context()
+  const paths: string[] = []
+  provide(ctx, 'webServer', {
+    host: '127.0.0.1',
+    register(route: { path: string }) {
+      paths.push(route.path)
+      return () => {}
+    },
+  })
+  provide(ctx, 'agents', { get: () => undefined })
+  provide(ctx, 'workspaceRegistry', { create: async () => ({ path: '/x', attachSession: async () => {} }) })
+  provide(ctx, 'permissionPresets', { defaultPreset: 'workspace-write', resolve: () => ({}), set: () => {} })
+  provide(ctx, 'sessionTitle', { rename: () => {} })
+  provide(ctx, 'agentDefaultModel', { currentSelection: () => ({ provider: 'p', model: 'm' }) })
+  await ctx.plugin(built as never, undefined as never)
+  await ctx.fiber.dispose()
+  expect(paths).toEqual([])
+}, 60_000)
+
 test('the loopback self-check refuses to register on a non-loopback host', async () => {
   const built: unknown = await import(pathToFileURL(builtEntry).href)
   const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
@@ -286,16 +346,24 @@ test('the loopback self-check refuses to register on a non-loopback host', async
     provide(ctx, 'sessionTitle', { rename: () => {} })
     provide(ctx, 'agentPresets', { resolve: async (id: string) => ({ id }) })
     provide(ctx, 'agentDefaultModel', { currentSelection: () => ({ provider: 'p', model: 'm' }) })
+    // `llm` is injected by the plugin, so the mount needs it present for the
+    // positive control below; the absence case is its own test above.
+    provide(ctx, 'llm', {
+      listProviders: () => [],
+      listModels: async () => [],
+      resolveModelInfo: async (provider: string, model: string) => ({ provider, id: model, name: model }),
+      resolveCallConfig: async (config: unknown) => config,
+    })
     await ctx.plugin(built as never, undefined as never)
     await ctx.fiber.dispose()
     return paths
   }
 
-  // Positive control first: the SAME direct mount registers all three routes on
+  // Positive control first: the SAME direct mount registers every route on
   // loopback, so an empty list below is caused by the host and not by a mount
   // that never succeeded.
   const loopback = await mount('127.0.0.1')
-  expect(loopback.sort()).toEqual([OPEN, STOP, STATUS].sort())
+  expect(loopback.sort()).toEqual([MODELS, OPEN, STOP, STATUS].sort())
 
   const refused = await mount('0.0.0.0')
   expect(refused).toEqual([])
