@@ -20,6 +20,9 @@ importers:
       '@deepseek-ai/dsh-agent':
         specifier: link:../deepseek-harness/packages/core/agent
         version: link:../deepseek-harness/packages/core/agent
+      '@deepseek-ai/dsh-agent-default-model':
+        specifier: link:../deepseek-harness/packages/core/agent-default-model
+        version: link:../deepseek-harness/packages/core/agent-default-model
       '@deepseek-ai/dsh-agent-presets':
         specifier: link:../deepseek-harness/packages/preset/agent-presets
         version: link:../deepseek-harness/packages/preset/agent-presets

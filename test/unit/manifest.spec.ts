@@ -137,10 +137,20 @@ describe('dependency symmetry', () => {
     const match = /export const inject = \[([^\]]*)\]/u.exec(source)
     expect(match).not.toBeNull()
     const names = (match?.[1] ?? '').split(',').map(entry => entry.trim().replaceAll("'", '')).filter(Boolean)
-    expect(names).toEqual(['webServer', 'agents', 'workspaceRegistry', 'permissionPresets', 'sessionTitle'])
+    expect(names).toEqual([
+      'webServer',
+      'agents',
+      'workspaceRegistry',
+      'permissionPresets',
+      'sessionTitle',
+      'agentDefaultModel',
+    ])
     // Present as a link because the plugin reads it — but NOT required at
     // activation: a deployment without it must still register the routes.
     expect(names).not.toContain('agentPresets')
     expect(manifest.peerDependencies['@deepseek-ai/dsh-agent-presets']).toBeDefined()
+    // Required, by contrast: it is the only source of a complete provider+model
+    // route, and a session created without one dies on its first turn.
+    expect(manifest.peerDependencies['@deepseek-ai/dsh-agent-default-model']).toBeDefined()
   })
 })

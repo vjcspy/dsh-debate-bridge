@@ -9,7 +9,7 @@
  * - the plugin composes through a real `cordis.yml` read by the real Loader,
  *   in the same shape `cordis.patch.yml` inserts into a profile.
  *
- * The five services the plugin injects are provided as recording stubs. That
+ * The six services the plugin injects are provided as recording stubs. That
  * is deliberate: the subjects under test are the plugin's OWN contract
  * (registration, validation, ordering, error bodies) and its loopback
  * self-check, not the harness's session stack.
@@ -112,6 +112,13 @@ export interface Composition {
   readonly getAnswers: Array<FakeAgent | undefined>
   /** Make `agents.create` throw this error instead of succeeding. */
   createThrows: unknown
+  /**
+   * What the stub `agentDefaultModel.currentSelection()` reports. Mutable so a
+   * spec can reproduce a host whose default model is complete, and one where it
+   * is blank in either half — the latter must refuse the request rather than
+   * mint a session whose every turn dies.
+   */
+  defaultModel: { provider: string; model: string }
   dispose(): Promise<void>
 }
 
@@ -147,6 +154,7 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
     resumeWith: undefined,
     getAnswers: [],
     createThrows: undefined,
+    defaultModel: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
     dispose: async () => { await rm(root, { recursive: true, force: true }) },
   }
 
@@ -177,8 +185,8 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
       // nothing rather than whatever happens to be live.
       return composition.live?.session.id === id ? composition.live : undefined
     },
-    async resume(options: { resumeSessionId: string }) {
-      record('agents.resume', options.resumeSessionId)
+    async resume(options: { resumeSessionId: string; agentOptions?: unknown }) {
+      record('agents.resume', { sessionId: options.resumeSessionId, agentOptions: options.agentOptions })
       if (composition.resumeWith !== undefined) {
         const resumed = composition.resumeWith
         const admit = resumed.followup.bind(resumed)
@@ -213,6 +221,12 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
     async resolve(id: string) {
       if (id !== 'standard') throw new Error(`agent-presets: preset "${id}" not found (available: standard)`)
       return { id }
+    },
+  })
+  provide(ctx, 'agentDefaultModel', {
+    currentSelection() {
+      record('agentDefaultModel.currentSelection')
+      return { ...composition.defaultModel }
     },
   })
 

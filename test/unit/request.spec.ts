@@ -110,11 +110,15 @@ describe('parseStartRequest', () => {
     expect(parseStartRequest(startBody({ sessionId: 12 })).ok).toBe(false)
   })
 
-  test('model is optional, non-blank when present, and never silently defaulted', () => {
+  test('model is optional, shape-checked, and blank means the host default', () => {
     const present = parseStartRequest(startBody({ model: 'deepseek/deepseek-v3' }))
     expect(present.ok).toBe(true)
     if (present.ok) expect(present.value.model).toBe('deepseek/deepseek-v3')
-    expect(parseStartRequest(startBody({ model: '   ' })).ok).toBe(false)
+    // Blank is the same request as absent, never a route the host is told to
+    // run: the live resolver maps both onto the host's default selection.
+    const blank = parseStartRequest(startBody({ model: '   ' }))
+    expect(blank.ok).toBe(true)
+    if (blank.ok) expect(blank.value.model).toBe('')
     expect(parseStartRequest(startBody({ model: 3 })).ok).toBe(false)
   })
 

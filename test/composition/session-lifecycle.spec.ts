@@ -63,7 +63,7 @@ test('a cold debate creates the session in the exact mandated order, followup la
   const create = composition.calls.find(call => call.what === 'agents.create')?.detail as {
     sessionId: string
     meta: { cwd: string; agentPreset?: string }
-    agentOptions: { model?: string }
+    agentOptions: { provider?: string; model?: string }
   }
   expect(create.sessionId).toBe('dsh-debate-order-1')
   // The canonical path the Workspace reported, NOT the request's spelling.
@@ -72,7 +72,10 @@ test('a cold debate creates the session in the exact mandated order, followup la
   // "" means host default, so the carrier must stay ABSENT rather than be set
   // to an empty string the loop would have to interpret.
   expect('agentPreset' in create.meta).toBe(false)
-  expect(create.agentOptions).toEqual({ model: 'deepseek/deepseek-v3' })
+  // BOTH halves are carried. `provider` alone with a missing model — or the
+  // reverse — is the defect: the loop then kills every turn on
+  // `agent "<id>" has no provider/model`, after a green 200.
+  expect(create.agentOptions).toEqual({ provider: 'deepseek', model: 'deepseek-v3' })
 
   const preset = composition.calls.find(call => call.what === 'permissionPresets.set')?.detail as {
     session: string
@@ -136,6 +139,67 @@ test('a cold-but-persisted id falls through to resume, never to a 5xx', async ()
   expect(composition.calls.some(call => call.what === 'agents.resume')).toBe(true)
   expect(composition.calls.some(call => call.what === 'agents.create')).toBe(false)
   expect(resumed.followups).toHaveLength(1)
+
+  // The route is passed to `resume` too: it rebuilds the loop, which needs a
+  // complete provider+model exactly as much as `create` does.
+  const resume = composition.calls.find(call => call.what === 'agents.resume')?.detail as {
+    agentOptions?: { provider?: string; model?: string }
+  }
+  expect(resume.agentOptions).toEqual({ provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+}, 60_000)
+
+test('an absent model resolves to the host default selection, provider AND model', async () => {
+  composition = await boot()
+  composition.defaultModel = { provider: 'deepseek-official', model: 'deepseek-v4-flash' }
+  const opened = await post(composition, OPEN, startBody('default-1'))
+  expect(opened.status).toBe(200)
+  const create = composition.calls.find(call => call.what === 'agents.create')?.detail as {
+    agentOptions: { provider?: string; model?: string }
+  }
+  expect(create.agentOptions).toEqual({ provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+}, 60_000)
+
+test('a blank model is treated as absent, not as a route the host must be told', async () => {
+  for (const blank of ['', '   ']) {
+    composition = await boot()
+    const opened = await post(composition, OPEN, startBody('blank-1', { model: blank }))
+    expect(opened.status).toBe(200)
+    const create = composition.calls.find(call => call.what === 'agents.create')?.detail as {
+      agentOptions: { provider?: string; model?: string }
+    }
+    // A blank `{{model}}` kills the turn INSIDE the prompt template, after a
+    // green 200; the default selection is what must travel instead.
+    expect(create.agentOptions).toEqual({ provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+    await composition.dispose()
+    composition = undefined
+  }
+}, 60_000)
+
+test('a model with no "/" is refused 4xx, naming the required form, and creates nothing', async () => {
+  composition = await boot()
+  const refused = await post(composition, OPEN, startBody('single-1', { model: 'deepseek-v4-flash' }))
+  expect(refused.status).toBe(400)
+  expect(String(refused.json['error'])).toContain('provider/model')
+  expect(String(refused.json['error'])).toContain('deepseek-v4-flash')
+  // Fail CLOSED: no provider is guessed, so no session is minted at all.
+  expect(composition.calls.some(call => call.what === 'agents.create')).toBe(false)
+  expect(composition.calls.some(call => call.what === 'workspaceRegistry.create')).toBe(false)
+}, 60_000)
+
+test('a host default selection with a blank half is refused 4xx instead of minting a dying session', async () => {
+  for (const half of ['provider', 'model'] as const) {
+    composition = await boot()
+    composition.defaultModel = half === 'provider'
+      ? { provider: '', model: 'deepseek-v4-flash' }
+      : { provider: 'deepseek-official', model: '' }
+    const refused = await post(composition, OPEN, startBody('half-1'))
+    expect(refused.status).toBe(400)
+    expect(String(refused.json['error'])).toContain(`no ${half} is available`)
+    expect(String(refused.json['error'])).toContain('dsh.model')
+    expect(composition.calls.some(call => call.what === 'agents.create')).toBe(false)
+    await composition.dispose()
+    composition = undefined
+  }
 }, 60_000)
 
 test('a lost create race maps SessionAlreadyExistsError onto the adopt branch', async () => {
@@ -221,6 +285,7 @@ test('the loopback self-check refuses to register on a non-loopback host', async
     provide(ctx, 'permissionPresets', { defaultPreset: 'workspace-write', resolve: () => ({}), set: () => {} })
     provide(ctx, 'sessionTitle', { rename: () => {} })
     provide(ctx, 'agentPresets', { resolve: async (id: string) => ({ id }) })
+    provide(ctx, 'agentDefaultModel', { currentSelection: () => ({ provider: 'p', model: 'm' }) })
     await ctx.plugin(built as never, undefined as never)
     await ctx.fiber.dispose()
     return paths

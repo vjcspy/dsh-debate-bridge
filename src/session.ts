@@ -22,8 +22,10 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
-// Side-effect type imports: these declare the `workspaceRegistry`,
-// `permissionPresets`, `sessionTitle` and `agentPresets` members this module reads.
+// Side-effect type imports: these declare the `agentDefaultModel`,
+// `workspaceRegistry`, `permissionPresets`, `sessionTitle` and `agentPresets`
+// members this module reads.
+import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-session-title'
@@ -57,6 +59,12 @@ export interface OpenSessionInput {
    * named default is observable; omitting the call is not.
    */
   readonly permissionPreset: string
+  /**
+   * Complete model route resolved by {@link resolveModelRoute}, already checked
+   * non-blank. Resolving in the ROUTE (before anything is created) is what keeps
+   * a half-configured host from minting a session whose every turn dies.
+   */
+  readonly modelRoute: { readonly provider: string; readonly model: string }
 }
 
 /** Edge-derived status of one session, as reported by `POST /dsh-debate/opponent/status`. */
@@ -153,9 +161,70 @@ function isOccupiedSession(error: unknown): boolean {
   return error instanceof Error && /^session ".*" already exists$/u.test(error.message)
 }
 
-/** Build the per-agent options object, omitting absent fields for `exactOptionalPropertyTypes`. */
-function agentOptionsOf(request: StartRequest): { readonly model?: string } {
-  return request.model === undefined ? {} : { model: request.model }
+/** Resolved agent route, or one machine-readable reason the request is refused. */
+export type RouteResolution =
+  | { readonly ok: true; readonly value: { readonly provider: string; readonly model: string } }
+  | { readonly ok: false; readonly error: string }
+
+/**
+ * Resolve the session's complete model route, fail closed.
+ *
+ * Both `provider` AND `model` are mandatory: the agent loop refuses to run a turn
+ * on a session missing either (`agent "<id>" has no provider/model`), so a route
+ * carrying only one half is no route at all. `request.model` therefore
+ * carries the full `provider/model` route, split on the FIRST `/` — provider ids
+ * never contain one and model ids may.
+ *
+ * A single-token `request.model` is REFUSED rather than guessed: no service here
+ * knows which provider owns an arbitrary model id, and guessing is exactly the
+ * silent-wrong-route defect this resolver exists to close.
+ *
+ * The post-resolution blank check is the safety net: it makes the
+ * `prompt variable "{{model}}" has no value` crash unreachable, because a session
+ * whose route is incomplete is never created at all.
+ * @param ctx - host context carrying the live `agentDefaultModel` service.
+ * @param request - validated request; `model` is absent when the caller wants the default.
+ * @returns the complete route, or one machine-readable reason.
+ */
+export function resolveModelRoute(ctx: Context, request: StartRequest): RouteResolution {
+  // Blank is "absent", not a route: a blank value would otherwise travel to the
+  // prompt template, which then dies on an empty `{{model}}` after a green 200.
+  const route = request.model?.trim() ?? ''
+  if (route === '') {
+    const selected = ctx.agentDefaultModel.currentSelection()
+    return checkRoute(selected.provider, selected.model)
+  }
+
+  const separator = route.indexOf('/')
+  if (separator <= 0) {
+    return {
+      ok: false,
+      error: 'model must name a provider and a model as "provider/model"'
+        + ` (got ${JSON.stringify(route)}); omit model to use the host default`,
+    }
+  }
+  return checkRoute(route.slice(0, separator).trim(), route.slice(separator + 1).trim())
+}
+
+/**
+ * Require both halves of a route to be usable.
+ *
+ * A blank half is never a route the loop can run, so it is refused here with the
+ * fix named, instead of creating a session whose every turn dies.
+ * @param provider - candidate provider id.
+ * @param model - candidate model id.
+ * @returns the route, or one machine-readable reason.
+ */
+function checkRoute(provider: string, model: string): RouteResolution {
+  if (provider === '' || model === '') {
+    const missing = provider === '' ? 'provider' : 'model'
+    return {
+      ok: false,
+      error: `no ${missing} is available for this session: set "dsh.model" as "provider/model" in the debate provider config, `
+        + 'or give the host a default model (agent-default-model provider/model)',
+    }
+  }
+  return { ok: true, value: { provider, model } }
 }
 
 /**
@@ -227,7 +296,7 @@ export function createDebateSessions(log: SessionLog): DebateSessions {
     sessionId: SessionId,
     input: OpenSessionInput,
   ): Promise<SessionId> => {
-    const { request, agentPresetId, permissionPreset } = input
+    const { request, agentPresetId, permissionPreset, modelRoute } = input
     const workspace = await ctx.workspaceRegistry.create(request.workspacePath)
     let handle: AgentHandle | undefined
     let attached = false
@@ -238,7 +307,7 @@ export function createDebateSessions(log: SessionLog): DebateSessions {
           cwd: workspace.path,
           ...agentPresetId === undefined ? {} : { agentPreset: agentPresetId },
         },
-        agentOptions: agentOptionsOf(request),
+        agentOptions: { provider: modelRoute.provider, model: modelRoute.model },
       })
       await workspace.attachSession(sessionId)
       attached = true
@@ -286,11 +355,13 @@ export function createDebateSessions(log: SessionLog): DebateSessions {
       }
 
       // Branch 2 — a cold-but-persisted session: a live `get()` cannot see it,
-      // and `create` would throw from the disk layer, so resume it.
+      // and `create` would throw from the disk layer, so resume it. The route is
+      // passed here too: `resume` rebuilds the loop, which needs it just as much
+      // as `create` does.
       try {
         const handle = await ctx.agents.resume({
           resumeSessionId: sessionId,
-          agentOptions: agentOptionsOf(request),
+          agentOptions: { provider: input.modelRoute.provider, model: input.modelRoute.model },
         })
         watch(handle.agent)
         prompt(handle.agent, request)

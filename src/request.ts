@@ -55,7 +55,7 @@ export interface StartRequest {
   readonly title: string
   /** First user turn / nudge text. Non-blank; bounded to {@link MAX_PROMPT_CHARS}. */
   readonly prompt: string
-  /** Model route for the session; omitted means the agent preset / host default. */
+  /** Full `provider/model` route for the session; `''`/absent means the host default. */
   readonly model?: string
   /** Agent preset name, or `''` for the host default. Existence is checked live. */
   readonly agentPreset: string
@@ -226,9 +226,10 @@ export function parseStartRequest(body: Record<string, unknown>): Parsed<StartRe
 
   const model = optionalString(body, 'model', MAX_MODEL_CHARS)
   if ('error' in model) return { ok: false, error: model.error }
-  if (model.value !== undefined && model.value.trim() === '') {
-    return { ok: false, error: 'model must not be blank when present' }
-  }
+  // Blank is NOT refused here: like `agentPreset` / `permissionPreset`, "" is
+  // how a caller says "host default". Which route that resolves to is a live
+  // question (`session.ts:checkRoute`), because only a running host knows its
+  // default model.
 
   return {
     ok: true,

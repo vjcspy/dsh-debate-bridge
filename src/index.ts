@@ -28,9 +28,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 // Side-effect type imports: these declare the `webServer`, `agents`,
-// `workspaceRegistry`, `permissionPresets`, `sessionTitle` and `agentPresets`
-// members this module reads.
+// `agentDefaultModel`, `workspaceRegistry`, `permissionPresets`, `sessionTitle`
+// and `agentPresets` members this module reads.
 import type {} from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-permission-presets'
@@ -44,12 +45,18 @@ import {
   parseStopRequest,
   type StartRequest,
 } from './request.ts'
-import { createDebateSessions, type SessionStatus } from './session.ts'
+import { createDebateSessions, resolveModelRoute, type SessionStatus } from './session.ts'
 
 export const name = 'dsh-debate-bridge'
 
 /**
  * Services this plugin cannot function without.
+ *
+ * `agentDefaultModel` is required rather than optional: it is the ONLY source of
+ * a complete `provider` + `model` route for a request that does not spell one,
+ * and creating a session without a route produces a green 200 followed by a
+ * session whose every turn dies (`agent "<id>" has no provider/model`). Refusing
+ * to activate without it is a loud failure in place of that silent one.
  *
  * `agentPresets` is deliberately NOT here: it is needed only to verify a
  * non-empty `agentPreset` name, so it is read through an optional `ctx.get()`
@@ -57,7 +64,7 @@ export const name = 'dsh-debate-bridge'
  * mount agent presets" into "the bridge never activates" — a worse failure than
  * refusing one request field, and one the caller can see.
  */
-export const inject = ['webServer', 'agents', 'workspaceRegistry', 'permissionPresets', 'sessionTitle']
+export const inject = ['webServer', 'agents', 'workspaceRegistry', 'permissionPresets', 'sessionTitle', 'agentDefaultModel']
 
 /** The only bind host on which these routes may be registered. */
 export const LOOPBACK_HOST = '127.0.0.1'
@@ -229,11 +236,19 @@ export function apply(ctx: Context): void {
         sendJson(res, 400, { error: presets.error })
         return
       }
+      // Resolved BEFORE anything is created: a route the loop cannot run must
+      // refuse the request, never mint a session whose every turn dies.
+      const route = resolveModelRoute(ctx, request)
+      if (!route.ok) {
+        sendJson(res, 400, { error: route.error })
+        return
+      }
       try {
         const sessionId = await sessions.open(ctx, {
           request,
           agentPresetId: presets.value.agentPresetId,
           permissionPreset: presets.value.permissionPreset,
+          modelRoute: route.value,
         })
         sendJson(res, 200, { sessionId })
       } catch (error: unknown) {

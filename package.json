@@ -42,6 +42,7 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.2",
     "@deepseek-ai/dsh-agent": ">=0.1.5-rc.1",
+    "@deepseek-ai/dsh-agent-default-model": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-agent-presets": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-brand": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-host-webserver": ">=0.1.5-rc.1",
@@ -57,6 +58,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-agent": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-agent-default-model": {
       "optional": true
     },
     "@deepseek-ai/dsh-agent-presets": {
@@ -92,6 +96,7 @@
     "@deepseek-ai/cordis-plugin-include": "link:../deepseek-harness/vendor/include",
     "@deepseek-ai/cordis-plugin-loader": "link:../deepseek-harness/vendor/loader",
     "@deepseek-ai/dsh-agent": "link:../deepseek-harness/packages/core/agent",
+    "@deepseek-ai/dsh-agent-default-model": "link:../deepseek-harness/packages/core/agent-default-model",
     "@deepseek-ai/dsh-agent-presets": "link:../deepseek-harness/packages/preset/agent-presets",
     "@deepseek-ai/dsh-brand": "link:../deepseek-harness/packages/util/brand",
     "@deepseek-ai/dsh-host-webserver": "link:../deepseek-harness/packages/host/webserver",
