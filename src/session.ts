@@ -36,7 +36,7 @@ import type { Agent, AgentHandle, ModelSelection } from '@deepseek-ai/dsh-agent'
 // `workspaceRegistry`, `permissionPresets`, `sessionTitle` and `agentPresets`
 // members this module reads.
 import type {} from '@deepseek-ai/dsh-agent-default-model'
-import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-workspace'

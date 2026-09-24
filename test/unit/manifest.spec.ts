@@ -150,7 +150,7 @@ describe('dependency symmetry', () => {
     // Required: `setup` (`agentPresets.mount`) is what joins the session to
     // its tool/AGENTS.md/persona composition — without it the bridge mints a
     // healthy-looking session whose Opponent can never act.
-    expect(manifest.peerDependencies['@deepseek-ai/dsh-agent-presets']).toBeDefined()
+    expect(manifest.peerDependencies['@deepseek-ai/dsh-agent-preset-registry']).toBeDefined()
     // Required, by contrast: it is the only source of a complete provider+model
     // route, and a session created without one dies on its first turn.
     expect(manifest.peerDependencies['@deepseek-ai/dsh-agent-default-model']).toBeDefined()

@@ -23,9 +23,9 @@ importers:
       '@deepseek-ai/dsh-agent-default-model':
         specifier: link:../deepseek-harness/packages/core/agent-default-model
         version: link:../deepseek-harness/packages/core/agent-default-model
-      '@deepseek-ai/dsh-agent-presets':
-        specifier: link:../deepseek-harness/packages/preset/agent-presets
-        version: link:../deepseek-harness/packages/preset/agent-presets
+      '@deepseek-ai/dsh-agent-preset-registry':
+        specifier: link:../deepseek-harness/packages/preset/agent-preset-registry
+        version: link:../deepseek-harness/packages/preset/agent-preset-registry
       '@deepseek-ai/dsh-api-session-controller':
         specifier: link:../deepseek-harness/packages/api/session-controller
         version: link:../deepseek-harness/packages/api/session-controller

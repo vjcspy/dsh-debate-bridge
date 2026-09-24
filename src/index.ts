@@ -33,7 +33,7 @@ import type { Context } from '@deepseek-ai/cordis'
 // and `agentPresets` members this module reads.
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
-import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-session-title'
@@ -188,10 +188,15 @@ async function resolvePresets(
   }
 
   try {
+    // `resolve` throws on an unknown id and reports a failed activation as
+    // `broken`; `setup` mounts the preset, so no standing scope is taken here
+    // (DSH 0.1.7 removed `standingKeyFor`).
     const preset = await ctx.agentPresets.resolve(
       request.agentPreset === '' ? undefined : request.agentPreset,
     )
-    await ctx.agentPresets.standingKeyFor(preset.id)
+    if (preset.broken !== undefined) {
+      return { ok: false, error: `unknown agentPreset: ${preset.id} is broken: ${JSON.stringify(preset.broken)}` }
+    }
     return { ok: true, value: { agentPresetId: preset.id, permissionPreset } }
   } catch (error: unknown) {
     return { ok: false, error: `unknown agentPreset: ${errorChain(error)}` }

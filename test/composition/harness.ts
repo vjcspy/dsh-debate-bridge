@@ -275,10 +275,6 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
       if (effective !== 'standard') throw new Error(`agent-presets: preset "${effective}" not found (available: standard)`)
       return { id: effective }
     },
-    async standingKeyFor(id?: string) {
-      record('agentPresets.standingKeyFor', id ?? 'standard')
-      return { scope: `standing:${id ?? 'standard'}` }
-    },
     async mount(agentCtx: unknown, id?: string) {
       record('agentPresets.mount', id ?? 'standard')
       return { id: id ?? 'standard' }
