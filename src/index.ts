@@ -60,11 +60,12 @@ export const name = 'dsh-debate-bridge'
  * session whose every turn dies (`agent "<id>" has no provider/model`). Refusing
  * to activate without it is a loud failure in place of that silent one.
  *
- * `agentPresets` is deliberately NOT here: it is needed only to verify a
- * non-empty `agentPreset` name, so it is read through an optional lookup.
- * Making it a required `inject` would turn "this deployment does not mount agent
- * presets" into "the bridge never activates" — a worse failure than refusing one
- * request field, and one the caller can see.
+ * `agentPresets` is required for the same fail-loud reason: the `setup` step
+ * (`ctx.agentPresets.mount`, see `src/session.ts`) is what joins the session
+ * to its tool/AGENTS.md/persona composition, and without it the bridge would
+ * mint a healthy-looking session whose Opponent can never act. A composition
+ * that mounts no agent presets must not mount this bridge either, because such
+ * a host cannot produce a Web-UI-equivalent session at all.
  *
  * `llm` IS required, and that is forced by the Cordis access guard rather than by
  * preference: the models verb hands `ctx` to `buildModelCatalog`, which
@@ -79,7 +80,7 @@ export const name = 'dsh-debate-bridge'
  * routes nor create a runnable session. The `web` profile mounts
  * `@deepseek-ai/dsh-llm`.
  */
-export const inject = ['webServer', 'agents', 'workspaceRegistry', 'permissionPresets', 'sessionTitle', 'agentDefaultModel', 'llm']
+export const inject = ['webServer', 'agents', 'workspaceRegistry', 'permissionPresets', 'sessionTitle', 'agentDefaultModel', 'agentPresets', 'llm']
 
 /** The only bind host on which these routes may be registered. */
 export const LOOPBACK_HOST = '127.0.0.1'
@@ -147,8 +148,8 @@ async function readBoundedBody(req: IncomingMessage): Promise<string | null> {
 
 /** One request's resolved preset names. */
 interface ResolvedPresets {
-  /** Canonical agent-preset id, or `undefined` for the host default. */
-  readonly agentPresetId: string | undefined
+  /** Canonical agent-preset id, ALWAYS concrete (empty wire value resolves the host default). */
+  readonly agentPresetId: string
   /** Permission preset to apply; never blank, so `set` is always called. */
   readonly permissionPreset: string
 }
@@ -158,6 +159,14 @@ interface ResolvedPresets {
  *
  * An unknown name is refused rather than silently ignored: the sibling defect
  * class this guards is a green-looking session that quietly ran on a default.
+ *
+ * The agent preset ALWAYS resolves to a concrete id — `''` on the wire means
+ * "host default" and is resolved via `agentPresets.resolve(undefined)`,
+ * exactly like the Web UI's `composeAgent`
+ * (`packages/api/session-controller/src/agent.ts:389`). The resolved id is
+ * then carried in `meta.agentPreset` AND joined in `setup` (`src/session.ts`),
+ * which together are what make the session Web-UI-equivalent. Returning
+ * `undefined` here would publish the agent on the empty global layer.
  * @param ctx - host context.
  * @param request - validated request.
  * @returns the resolved names, or one machine-readable reason.
@@ -178,13 +187,11 @@ async function resolvePresets(
     return { ok: false, error: `unknown permissionPreset: ${errorChain(error)}` }
   }
 
-  if (request.agentPreset === '') return { ok: true, value: { agentPresetId: undefined, permissionPreset } }
-  const agentPresets = ctx.get('agentPresets')
-  if (agentPresets === undefined) {
-    return { ok: false, error: 'agentPreset is set but the agentPresets service is not mounted; use "" for the host default' }
-  }
   try {
-    const preset = await agentPresets.resolve(request.agentPreset)
+    const preset = await ctx.agentPresets.resolve(
+      request.agentPreset === '' ? undefined : request.agentPreset,
+    )
+    await ctx.agentPresets.standingKeyFor(preset.id)
     return { ok: true, value: { agentPresetId: preset.id, permissionPreset } }
   } catch (error: unknown) {
     return { ok: false, error: `unknown agentPreset: ${errorChain(error)}` }

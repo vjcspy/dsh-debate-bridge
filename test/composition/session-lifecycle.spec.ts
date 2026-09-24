@@ -65,14 +65,23 @@ test('a cold debate creates the session in the exact mandated order, followup la
     sessionId: string
     meta: { cwd: string; agentPreset?: string }
     agentOptions: { provider?: string; model?: string }
+    hasSetup: boolean
   }
   expect(create.sessionId).toBe('dsh-debate-order-1')
   // The canonical path the Workspace reported, NOT the request's spelling.
   expect(create.meta.cwd).not.toBe('/Users/example/aweave')
   expect(create.meta.cwd).toContain(join('canonical', 'aweave'))
-  // "" means host default, so the carrier must stay ABSENT rather than be set
-  // to an empty string the loop would have to interpret.
-  expect('agentPreset' in create.meta).toBe(false)
+  // "" means host default, so it resolves to the concrete default id and is
+  // ALWAYS carried — an absent carrier would publish the agent on the empty
+  // global layer (no tools, no AGENTS.md, no persona).
+  expect(create.meta.agentPreset).toBe('standard')
+  // Web-UI equivalence: `setup` joins the preset (mount) and pins the first
+  // turn's model selection. Without it the session looks healthy while the
+  // Opponent can never act.
+  expect(create.hasSetup).toBe(true)
+  expect(composition.calls.some(
+    call => call.what === 'agentPresets.mount' && (call.detail as string) === 'standard',
+  )).toBe(true)
   // BOTH halves are carried. `provider` alone with a missing model — or the
   // reverse — is the defect: the loop then kills every turn on
   // `agent "<id>" has no provider/model`, after a green 200.
@@ -145,8 +154,12 @@ test('a cold-but-persisted id falls through to resume, never to a 5xx', async ()
   // complete provider+model exactly as much as `create` does.
   const resume = composition.calls.find(call => call.what === 'agents.resume')?.detail as {
     agentOptions?: { provider?: string; model?: string }
+    hasSetup?: boolean
   }
   expect(resume.agentOptions).toEqual({ provider: 'deepseek-official', model: 'deepseek-v4-flash' })
+  // A resumed agent is re-published and must re-join its preset, or it comes
+  // back on the empty global layer — the Web UI passes `setup` on resume too.
+  expect(resume.hasSetup).toBe(true)
 }, 60_000)
 
 test('an absent model resolves to the host default selection, provider AND model', async () => {

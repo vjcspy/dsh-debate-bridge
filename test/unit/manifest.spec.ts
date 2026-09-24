@@ -144,11 +144,12 @@ describe('dependency symmetry', () => {
       'permissionPresets',
       'sessionTitle',
       'agentDefaultModel',
+      'agentPresets',
       'llm',
     ])
-    // Present as a link because the plugin reads it — but NOT required at
-    // activation: a deployment without it must still register the routes.
-    expect(names).not.toContain('agentPresets')
+    // Required: `setup` (`agentPresets.mount`) is what joins the session to
+    // its tool/AGENTS.md/persona composition — without it the bridge mints a
+    // healthy-looking session whose Opponent can never act.
     expect(manifest.peerDependencies['@deepseek-ai/dsh-agent-presets']).toBeDefined()
     // Required, by contrast: it is the only source of a complete provider+model
     // route, and a session created without one dies on its first turn.

@@ -17,11 +17,21 @@
  * matters: this caller chooses the session id, so it can return it and be
  * idempotent.
  *
+ * The `setup` step is NOT a difference: like the webhook and like the Web UI's
+ * own `composeAgent` (`packages/api/session-controller/src/agent.ts:381-397`),
+ * every `create` AND every `resume` mounts the resolved agent preset
+ * (`ctx.agentPresets.mount`) and pins the first-turn model selection. Without
+ * `setup` the agent is published on the empty global layer — no `tool-bash`,
+ * no `tool-fs`, no `agent-instructions` (AGENTS.md), no persona — and the only
+ * readable surface left is the global MCP resource tool, against which a file
+ * path such as `agent/commands/common/debate-opponent.md` fails with
+ * `Method not found` (the Monolith server advertises only `tools`).
+ *
  * @module dsh-debate-bridge/session
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle, ModelSelection } from '@deepseek-ai/dsh-agent'
 // Side-effect type imports: these declare the `agentDefaultModel`,
 // `workspaceRegistry`, `permissionPresets`, `sessionTitle` and `agentPresets`
 // members this module reads.
@@ -31,7 +41,12 @@ import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-workspace'
 import { brandString } from '@deepseek-ai/dsh-brand'
-import { boundContextSummary, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
+import {
+  boundContextSummary,
+  createUserMessage,
+  errorChain,
+  type LlmCallConfig,
+} from '@deepseek-ai/dsh-llm'
 import {
   SessionAlreadyExistsError,
   SessionPersistenceNotFoundError,
@@ -46,11 +61,15 @@ export interface OpenSessionInput {
   readonly request: StartRequest
   /**
    * Canonical agent-preset id resolved against the live registry by the caller,
-   * or `undefined` for the host default. `meta.agentPreset` is the real carrier
-   * (`packages/core/agent/src/index.ts:84`); passing the raw request string
-   * without resolving it would accept a typo and silently use the default.
+   * ALWAYS concrete — never `undefined`. An empty `agentPreset` on the wire
+   * means "host default" and the caller resolves it via
+   * `agentPresets.resolve(undefined)`, exactly like the Web UI's `composeAgent`
+   * (`packages/api/session-controller/src/agent.ts:389`). `meta.agentPreset`
+   * is the real carrier (`packages/core/agent/src/index.ts:84`); passing the
+   * raw request string without resolving it would accept a typo and silently
+   * use the default.
    */
-  readonly agentPresetId: string | undefined
+  readonly agentPresetId: string
   /**
    * Permission preset to APPLY, already resolved by the caller from the live
    * registry. This is never the raw request value: `''` on the wire means "host
@@ -165,6 +184,32 @@ function isOccupiedSession(error: unknown): boolean {
 export type RouteResolution =
   | { readonly ok: true; readonly value: { readonly provider: string; readonly model: string } }
   | { readonly ok: false; readonly error: string }
+
+/**
+ * Apply the creation-time selection until its first durable request header exists.
+ *
+ * Mirrors the webhook's helper (`packages/webhook/webhook/src/session.ts:92-104`)
+ * verbatim: the resolved `provider`/`model` is already carried in
+ * `agentOptions`, and this pin keeps the first turn on it even if the host
+ * default moves between session creation and the first request. An
+ * adapter-defaulted `reasoningEffort` is never restored as a conversation
+ * choice.
+ * @param agentCtx - the agent-scoped context the loop reads the selection from.
+ * @param selection - the complete route this session was created with.
+ */
+function installInitialModelSelection(agentCtx: Context, selection: ModelSelection): void {
+  agentCtx.on('agent/request', async ({ agent }, next): Promise<LlmCallConfig> => {
+    const resolved = await next()
+    if (agent.session.requestHeader() !== undefined
+      || resolved.provider !== selection.provider
+      || resolved.model !== selection.model) return resolved
+    const { reasoningEffort: _inheritedEffort, ...withoutInheritedEffort } = resolved
+    return {
+      ...withoutInheritedEffort,
+      ...selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort },
+    }
+  })
+}
 
 /**
  * The seam {@link resolveModelRoute} needs to check a route against the host's
@@ -327,6 +372,16 @@ export function createDebateSessions(log: SessionLog): DebateSessions {
    * string: `attachSession` compares resolved directories
    * (`packages/workspace/workspace/src/types.ts:68-79`).
    *
+   * The `setup` callback is what makes this a real Web-UI-equivalent session:
+   * `ctx.agentPresets.mount(agentCtx, agentPresetId)` joins the agent to the
+   * preset composition (tools, prompt sections, AGENTS.md via
+   * `agent-instructions`, persona, skill catalog), and
+   * `installInitialModelSelection` pins the first turn to the resolved route.
+   * Omitting `setup` publishes the agent on the empty global layer — the
+   * harness warns `was published without joining an agent preset`
+   * (`packages/preset/agent-presets/src/index.ts:218-226`) — and the session
+   * looks healthy while the Opponent can never act.
+   *
    * The `permissionPresets.set` call is MANDATORY and fails SILENTLY if omitted:
    * without it the session is live on the default `workspace-write` /
    * `approval: 'ask'` preset, the sidebar row appears, the id is returned and
@@ -352,9 +407,16 @@ export function createDebateSessions(log: SessionLog): DebateSessions {
         sessionId,
         meta: {
           cwd: workspace.path,
-          ...agentPresetId === undefined ? {} : { agentPreset: agentPresetId },
+          agentPreset: agentPresetId,
         },
         agentOptions: { provider: modelRoute.provider, model: modelRoute.model },
+        setup: async (agentCtx) => {
+          await ctx.agentPresets.mount(agentCtx, agentPresetId)
+          installInitialModelSelection(agentCtx, {
+            provider: modelRoute.provider,
+            model: modelRoute.model,
+          })
+        },
       })
       await workspace.attachSession(sessionId)
       attached = true
@@ -404,11 +466,21 @@ export function createDebateSessions(log: SessionLog): DebateSessions {
       // Branch 2 — a cold-but-persisted session: a live `get()` cannot see it,
       // and `create` would throw from the disk layer, so resume it. The route is
       // passed here too: `resume` rebuilds the loop, which needs it just as much
-      // as `create` does.
+      // as `create` does. The `setup` is passed here too — the Web UI does the
+      // same on every resume (`packages/api/session-controller/src/agent.ts:437-441,
+      // 469-473`): a resumed agent is re-published and must re-join its preset,
+      // or it comes back on the empty global layer.
       try {
         const handle = await ctx.agents.resume({
           resumeSessionId: sessionId,
           agentOptions: { provider: input.modelRoute.provider, model: input.modelRoute.model },
+          setup: async (agentCtx) => {
+            await ctx.agentPresets.mount(agentCtx, input.agentPresetId)
+            installInitialModelSelection(agentCtx, {
+              provider: input.modelRoute.provider,
+              model: input.modelRoute.model,
+            })
+          },
         })
         watch(handle.agent)
         prompt(handle.agent, request)

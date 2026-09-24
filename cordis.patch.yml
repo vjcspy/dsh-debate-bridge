@@ -14,10 +14,13 @@
 #   POST /dsh-debate/opponent/status  { sessionId } -> { live, idle, lastActivityAt }
 #
 # The start verb creates the Session IN PROCESS — `workspaceRegistry.create` ->
-# `agents.create({ sessionId, meta: { cwd: workspace.path } })` ->
+# `agents.create({ sessionId, meta: { cwd: workspace.path, agentPreset }, agentOptions, setup })` ->
 # `workspace.attachSession` -> `permissionPresets.set` -> `sessionTitle.rename`
 # -> `agent.followup` — so the Session lands in the same in-memory SessionStore
-# the Web GUI reads and `session/created` -> `api-session/added` fires. A
+# the Web GUI reads and `session/created` -> `api-session/added` fires. The
+# `setup` step (`agentPresets.mount` + first-turn model selection) is what makes
+# the session Web-UI-equivalent (tools, AGENTS.md, persona, skills); without it
+# the agent publishes on the empty global layer. A
 # Session written by another process would surface only as a cold row after a
 # refresh and could not be adopted while live (`session/writer-held`).
 #

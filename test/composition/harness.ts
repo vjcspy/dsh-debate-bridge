@@ -222,10 +222,16 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
       // nothing rather than whatever happens to be live.
       return composition.live?.session.id === id ? composition.live : undefined
     },
-    async resume(options: { resumeSessionId: string; agentOptions?: unknown }) {
-      record('agents.resume', { sessionId: options.resumeSessionId, agentOptions: options.agentOptions })
+    async resume(options: { resumeSessionId: string; agentOptions?: unknown; setup?: unknown }) {
+      record('agents.resume', { sessionId: options.resumeSessionId, agentOptions: options.agentOptions, hasSetup: typeof options.setup === 'function' })
       if (composition.resumeWith !== undefined) {
         const resumed = composition.resumeWith
+        if (typeof options.setup === 'function') {
+          await (options.setup as (agentCtx: unknown, agent: unknown) => unknown)(
+            { on: () => () => {} },
+            resumed,
+          )
+        }
         const admit = resumed.followup.bind(resumed)
         resumed.followup = (message) => { record('agent.followup'); admit(message) }
         return { agent: resumed, dispose: async () => {} }
@@ -233,10 +239,19 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
       const { SessionPersistenceNotFoundError } = await import('@deepseek-ai/dsh-session-persistence')
       throw new SessionPersistenceNotFoundError(options.resumeSessionId as never)
     },
-    async create(options: { sessionId: string; meta?: unknown; agentOptions?: unknown }) {
-      record('agents.create', { sessionId: options.sessionId, meta: options.meta, agentOptions: options.agentOptions })
+    async create(options: { sessionId: string; meta?: unknown; agentOptions?: unknown; setup?: unknown }) {
+      record('agents.create', { sessionId: options.sessionId, meta: options.meta, agentOptions: options.agentOptions, hasSetup: typeof options.setup === 'function' })
       if (composition.createThrows !== undefined) throw composition.createThrows
       const agent = fakeAgent(options.sessionId, 'idle', record)
+      if (typeof options.setup === 'function') {
+        // Run the real setup against the stub registry so `agentPresets.mount`
+        // is proven, not just asserted present. The fake agentCtx only needs
+        // the `on()` surface `installInitialModelSelection` touches.
+        await (options.setup as (agentCtx: unknown, agent: unknown) => unknown)(
+          { on: () => () => {} },
+          agent,
+        )
+      }
       composition.live = agent
       return { agent, dispose: async () => { record('agents.handle.dispose') } }
     },
@@ -255,9 +270,18 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
     rename(session: { id: string }, title: string) { record('sessionTitle.rename', { session: session.id, title }) },
   })
   provide(ctx, 'agentPresets', {
-    async resolve(id: string) {
-      if (id !== 'standard') throw new Error(`agent-presets: preset "${id}" not found (available: standard)`)
-      return { id }
+    async resolve(id?: string) {
+      const effective = id ?? 'standard'
+      if (effective !== 'standard') throw new Error(`agent-presets: preset "${effective}" not found (available: standard)`)
+      return { id: effective }
+    },
+    async standingKeyFor(id?: string) {
+      record('agentPresets.standingKeyFor', id ?? 'standard')
+      return { scope: `standing:${id ?? 'standard'}` }
+    },
+    async mount(agentCtx: unknown, id?: string) {
+      record('agentPresets.mount', id ?? 'standard')
+      return { id: id ?? 'standard' }
     },
   })
   provide(ctx, 'agentDefaultModel', {
