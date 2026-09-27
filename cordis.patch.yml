@@ -1,34 +1,62 @@
 # dsh-debate-bridge bundle patch: mounts the plugin on the host plane under
-# the stable id `dsh-debate-bridge`. The plugin registers no tool of its own
-# and contributes no UI half — the GUI surface is the Session it creates.
+# the stable id `dsh-debate-bridge`, and its browser half on the web plane.
 #
-# It provides one capability: a loopback-only HTTP bridge the debate server's
-# `dsh` opponent provider calls. Three routes, all OUTSIDE `/api` so no cookie
-# or Origin fence applies (the fence is applied per-channel in
-# `HostConnectionService` and the mux upgrade, not globally):
+# The plugin provides TWO surfaces.
 #
-#   POST /dsh-debate/opponent         { debateId, sessionId?, title, prompt,
-#                                       model?, agentPreset, permissionPreset,
-#                                       workspacePath } -> { sessionId }
-#   POST /dsh-debate/opponent/stop    { sessionId } -> { stopped }
-#   POST /dsh-debate/opponent/status  { sessionId } -> { live, idle, lastActivityAt }
+# 1. A loopback-only HTTP bridge the debate server's `dsh` opponent provider
+#    calls. Four routes, all OUTSIDE `/api` so no cookie or Origin fence applies
+#    (the fence is applied per-channel in `HostConnectionService` and the mux
+#    upgrade, not globally):
 #
-# The start verb creates the Session IN PROCESS — `workspaceRegistry.create` ->
-# `agents.create({ sessionId, meta: { cwd: workspace.path, agentPreset }, agentOptions, setup })` ->
-# `workspace.attachSession` -> `permissionPresets.set` -> `sessionTitle.rename`
-# -> `agent.followup` — so the Session lands in the same in-memory SessionStore
-# the Web GUI reads and `session/created` -> `api-session/added` fires. The
-# `setup` step (`agentPresets.mount` + first-turn model selection) is what makes
-# the session Web-UI-equivalent (tools, AGENTS.md, persona, skills); without it
-# the agent publishes on the empty global layer. A
-# Session written by another process would surface only as a cold row after a
-# refresh and could not be adopted while live (`session/writer-held`).
+#      POST /dsh-debate/opponent         { debateId, sessionId?, title, prompt,
+#                                          model?, agentPreset, permissionPreset,
+#                                          workspacePath } -> { sessionId }
+#      POST /dsh-debate/opponent/stop    { sessionId } -> { stopped }
+#      POST /dsh-debate/opponent/status  { sessionId } -> { live, idle, lastActivityAt }
+#      GET  /dsh-debate/models           -> { models, failures }
 #
-# There is no `config` row: every input arrives in the request body. Before
-# registering anything the plugin reads the resolved `webServer.host` and
-# refuses to register unless it is exactly `127.0.0.1`, because these routes
-# accept an arbitrary prompt, an arbitrary workspace path and a
-# `danger-full-access` preset.
+#    The start verb creates the Session IN PROCESS — `workspaceRegistry.create` ->
+#    `agents.create({ sessionId, meta: { cwd: workspace.path, agentPreset }, agentOptions, setup })` ->
+#    `workspace.attachSession` -> `permissionPresets.set` -> `sessionTitle.rename`
+#    -> `agent.followup` — so the Session lands in the same in-memory SessionStore
+#    the Web GUI reads and `session/created` -> `api-session/added` fires. The
+#    `setup` step (`agentPresets.mount` + first-turn model selection) is what makes
+#    the session Web-UI-equivalent (tools, AGENTS.md, persona, skills); without it
+#    the agent publishes on the empty global layer. A
+#    Session written by another process would surface only as a cold row after a
+#    refresh and could not be adopted while live (`session/writer-held`).
+#
+#    There is no `config` row for this surface: every input arrives in the request
+#    body. Before registering anything the plugin reads the resolved
+#    `webServer.host` and refuses to register unless it is exactly `127.0.0.1`,
+#    because these routes accept an arbitrary prompt, an arbitrary workspace path
+#    and a `danger-full-access` preset.
+#
+# 2. A `Debate Arena` page tab in the core right sidebar (`dsh.client.platform:
+#    web`), served by three reads on the ADMISSION-FENCED `/api` channel —
+#    `GET /api/dsh-debate/debates`, `GET /api/dsh-debate/debate?id=`, and
+#    `GET /api/dsh-debate/attach?sessionId=`. The first two forward to the debate
+#    server; the third answers from the plugin's in-memory Session→debate
+#    attachment, which an observer establishes by pairing an `aw debate create`
+#    tool call with its result.
+#
+#    This surface DOES have a `config` row — a deviation from the plugin's
+#    original "no config row" stance — because the upstream origin is a
+#    deployment fact:
+#
+#      - id: dsh-debate-bridge
+#        name: 'dsh-debate-bridge'
+#        config:
+#          debateServer:
+#            baseUrl: http://127.0.0.1:3456   # default
+#            requestTimeoutMs: 8000           # default
+#            authTokenEnv: ''                 # NAME of the env var holding the
+#                                             # bearer; never the token itself,
+#                                             # because every tracked file in
+#                                             # this repository is public.
+#
+#    Every value above is the default, so naming no `config` row at all is the
+#    normal deployment and works unchanged.
 
 - insert:
     - id: dsh-debate-bridge

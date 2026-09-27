@@ -1,7 +1,7 @@
 {
   "name": "dsh-debate-bridge",
-  "version": "0.1.0",
-  "description": "dsh plugin: debate-opponent bridge. Registers three loopback-only HTTP routes on the running `dsh web` host and creates, attaches, permission-presets, titles and prompts the Opponent Session IN PROCESS, so the Session lands in the same SessionStore the Web GUI reads and appears live with no refresh. Also exposes the edge-derived idle signal the debate server's `dsh` provider needs to recover an Opponent that stopped mid-debate. Registers no tool and contributes no UI: the GUI surface is the Session itself.",
+  "version": "0.2.0",
+  "description": "dsh plugin: debate bridge and arena. The host half registers four loopback-only HTTP routes on the running `dsh web` host and creates, attaches, permission-presets, titles and prompts the Opponent Session IN PROCESS, so the Session lands in the same SessionStore the Web GUI reads and appears live with no refresh; it also exposes the edge-derived idle signal the debate server's `dsh` provider needs and observes `aw debate create` tool results to link a Proposer debate to the Session that created it. The browser half adds a Debate Arena page tab to the core right sidebar and reads debates through three admission-fenced `/api` routes.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -9,6 +9,10 @@
     ".": {
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client/index.d.ts",
+      "default": "./lib/client.js"
     },
     "./package.json": "./package.json"
   },
@@ -21,7 +25,9 @@
     "opponent",
     "session",
     "webserver",
-    "bridge"
+    "bridge",
+    "sidebar",
+    "arena"
   ],
   "engines": {
     "node": ">=22.19.0"
@@ -32,10 +38,11 @@
     "src"
   ],
   "scripts": {
-    "build": "pnpm run build:host",
+    "build": "pnpm run build:host && pnpm run build:client",
     "build:host": "tsc -p tsconfig.json",
-    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
-    "test": "vitest run",
+    "build:client": "tsc -p tsconfig.client.json && tsdown --config tsdown.config.ts",
+    "check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.client.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "pnpm run build && vitest run",
     "test:unit": "vitest run test/unit",
     "test:composition": "vitest run test/composition"
   },
@@ -46,13 +53,17 @@
     "@deepseek-ai/dsh-agent-preset-registry": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-api-session-controller": ">=0.1.6-alpha.2",
     "@deepseek-ai/dsh-brand": ">=0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-connection": ">=0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-store": ">=0.1.7-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": ">=0.1.7-rc.2",
     "@deepseek-ai/dsh-host-webserver": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-llm": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-permission-presets": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-session": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-session-persistence": ">=0.1.5-rc.1",
     "@deepseek-ai/dsh-session-title": ">=0.1.5-rc.1",
-    "@deepseek-ai/dsh-workspace": ">=0.1.5-rc.1"
+    "@deepseek-ai/dsh-workspace": ">=0.1.5-rc.1",
+    "@deepseek-ai/schemastery": ">=3.18.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {
@@ -71,6 +82,15 @@
       "optional": true
     },
     "@deepseek-ai/dsh-brand": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-store": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-primitives": {
       "optional": true
     },
     "@deepseek-ai/dsh-host-webserver": {
@@ -93,6 +113,9 @@
     },
     "@deepseek-ai/dsh-workspace": {
       "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
     }
   },
   "devDependencies": {
@@ -104,6 +127,14 @@
     "@deepseek-ai/dsh-agent-preset-registry": "link:../deepseek-harness/packages/preset/agent-preset-registry",
     "@deepseek-ai/dsh-api-session-controller": "link:../deepseek-harness/packages/api/session-controller",
     "@deepseek-ai/dsh-brand": "link:../deepseek-harness/packages/util/brand",
+    "@deepseek-ai/dsh-client-connection": "link:../deepseek-harness/packages/client/connection",
+    "@deepseek-ai/dsh-client-locale": "link:../deepseek-harness/packages/client/locale",
+    "@deepseek-ai/dsh-client-store": "link:../deepseek-harness/packages/client/store",
+    "@deepseek-ai/dsh-client-ui-primitives": "link:../deepseek-harness/packages/client/ui-primitives",
+    "@deepseek-ai/dsh-client-ui-renderer": "link:../deepseek-harness/packages/client/ui-renderer",
+    "@deepseek-ai/dsh-client-ui-session": "link:../deepseek-harness/packages/client/ui-session",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "link:../deepseek-harness/packages/client/ui-sidebar-right",
+    "@deepseek-ai/dsh-client-ui-slots": "link:../deepseek-harness/packages/client/ui-slots",
     "@deepseek-ai/dsh-host-webserver": "link:../deepseek-harness/packages/host/webserver",
     "@deepseek-ai/dsh-llm": "link:../deepseek-harness/packages/llm/llm",
     "@deepseek-ai/dsh-permission-presets": "link:../deepseek-harness/packages/interaction/permission-presets",
@@ -111,13 +142,20 @@
     "@deepseek-ai/dsh-session-persistence": "link:../deepseek-harness/packages/session/session-persistence",
     "@deepseek-ai/dsh-session-title": "link:../deepseek-harness/packages/session/session-title",
     "@deepseek-ai/dsh-workspace": "link:../deepseek-harness/packages/workspace/workspace",
+    "@deepseek-ai/schemastery": "link:../deepseek-harness/vendor/schemastery",
     "@types/node": "^22.20.0",
+    "@types/react": "~18.3.1",
+    "react": "^18.2.0",
+    "tsdown": "link:../deepseek-harness/node_modules/tsdown",
     "typescript": "^5.9.0",
     "vitest": "^4.1.8"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   }
 }

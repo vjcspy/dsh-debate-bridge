@@ -10,9 +10,12 @@
  * told to provide.
  *
  * Ported from `dsh-project-context/test/unit/manifest.spec.ts`, with one
- * addition: this plugin contributes NO client half, so the `dsh.client` block
- * is asserted ABSENT — its presence would make the shell try to load a
- * `./client` export that does not exist.
+ * inversion: this plugin used to contribute NO client half, and the
+ * `dsh.client` block was asserted ABSENT. It now ships a browser half, so the
+ * same assertion is made POSITIVE — the block is present, the `./client` export
+ * resolves to the bundle the client build emits, and the build script produces
+ * it. Getting either half out of step is what the shell reports as
+ * "failed to import", so both are pinned here.
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs'
@@ -23,22 +26,24 @@ import { describe, expect, test } from 'vitest'
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as {
   name: string
+  version: string
+  description: string
   private?: boolean
   main?: string
-  exports?: Record<string, unknown>
+  exports?: Record<string, { types?: string; default?: string }>
   scripts?: Record<string, string>
   peerDependencies: Record<string, string>
   peerDependenciesMeta: Record<string, { optional?: boolean }>
   devDependencies: Record<string, string>
-  dsh?: { bundle?: { patch?: string }; client?: unknown }
+  dsh?: { bundle?: { patch?: string }; client?: { platform?: string } }
 }
 
 /**
- * Every `.ts` file under one directory, recursively.
+ * Every `.ts` or `.tsx` file under one directory, recursively.
  *
- * The scan MUST recurse: a top-level `src/*.ts` listing would let a module in a
- * subdirectory escape the dependency invariant silently — exactly the failure
- * the invariant exists to catch.
+ * The scan MUST recurse, and MUST include the browser half: a top-level
+ * `src/*.ts` listing would let a module in a subdirectory escape the dependency
+ * invariant silently — exactly the failure the invariant exists to catch.
  * @param dir - absolute directory to walk.
  * @returns absolute paths of every TypeScript source below it.
  */
@@ -47,7 +52,7 @@ function typescriptFiles(dir: string): string[] {
   for (const entry of readdirSync(dir)) {
     const path = join(dir, entry)
     if (statSync(path).isDirectory()) found.push(...typescriptFiles(path))
-    else if (entry.endsWith('.ts')) found.push(path)
+    else if (entry.endsWith('.ts') || entry.endsWith('.tsx')) found.push(path)
   }
   return found
 }
@@ -85,39 +90,63 @@ describe('identity', () => {
     expect(patch).toContain('id: dsh-debate-bridge')
     expect(patch).toContain("name: 'dsh-debate-bridge'")
     expect(patch).not.toContain('dsh-project-context')
-    // The three routes the provider POSTs to must all be documented in the
+    // The FOUR routes the provider POSTs to must all be documented in the
     // bundle patch: it is the only place an operator reads the surface.
     expect(patch).toContain('/dsh-debate/opponent/status')
     expect(patch).toContain('/dsh-debate/opponent/stop')
+    expect(patch).toContain('/dsh-debate/models')
+    // And the three fenced reads the browser half calls.
+    expect(patch).toContain('/api/dsh-debate/debates')
+    expect(patch).toContain('/api/dsh-debate/debate')
+    expect(patch).toContain('/api/dsh-debate/attach')
   })
 
-  test('there is no client half, so no profile tries to load a ./client export', () => {
-    expect(manifest.dsh?.client).toBeUndefined()
-    expect(Object.keys(manifest.exports ?? {})).toEqual(['.', './package.json'])
-    expect(manifest.scripts?.['build:client']).toBeUndefined()
-    expect(manifest.scripts?.build).toBe('pnpm run build:host')
+  test('the description no longer claims the plugin contributes no UI', () => {
+    expect(manifest.description).not.toContain('contributes no UI')
+    expect(manifest.description).toContain('Debate Arena')
+    // The stale count is gone: four loopback routes, not three.
+    expect(manifest.description).not.toContain('Registers three')
+    expect(manifest.version).toBe('0.2.0')
   })
 
-  test('the six script names mirror the sibling plugin', () => {
+  test('BOTH halves exist, and the profile can load ./client', () => {
+    expect(manifest.dsh?.client?.platform).toBe('web')
+    expect(Object.keys(manifest.exports ?? {}).sort()).toEqual(['.', './client', './package.json'])
+    expect(manifest.exports?.['./client']?.default).toBe('./lib/client.js')
+    expect(manifest.exports?.['./client']?.types).toBe('./lib/client/index.d.ts')
+    expect(manifest.exports?.['.']?.default).toBe('./lib/index.js')
+    // The bundle the export names must be what the client build emits, or a
+    // `file:` install resolves an export nothing produces.
+    expect(manifest.scripts?.['build:client']).toContain('tsdown')
+    expect(manifest.scripts?.build).toBe('pnpm run build:host && pnpm run build:client')
+  })
+
+  test('the seven script names mirror the sibling dual-half plugin', () => {
     expect(Object.keys(manifest.scripts ?? {}).sort()).toEqual([
       'build',
+      'build:client',
       'build:host',
       'check',
       'test',
       'test:composition',
       'test:unit',
     ])
+    // `check` must cover every compiler face, the client one included.
+    expect(manifest.scripts?.check).toContain('tsconfig.client.json')
   })
 })
 
 describe('dependency symmetry', () => {
   test('every RUNTIME harness import is declared as BOTH a peer and a link', () => {
     const imports = runtimeHarnessImports()
-    // Sanity: the detector must actually be finding something.
+    // Sanity: the detector must actually be finding something, on both halves.
     expect(imports.size).toBeGreaterThan(0)
     expect(imports).toContain('@deepseek-ai/dsh-llm')
     expect(imports).toContain('@deepseek-ai/dsh-brand')
     expect(imports).toContain('@deepseek-ai/dsh-session-persistence')
+    expect(imports).toContain('@deepseek-ai/schemastery')
+    expect(imports).toContain('@deepseek-ai/dsh-client-store')
+    expect(imports).toContain('@deepseek-ai/dsh-client-ui-primitives')
     for (const specifier of imports) {
       expect(manifest.peerDependencies, `${specifier} must be a peerDependency`).toHaveProperty(specifier)
       expect(manifest.devDependencies, `${specifier} must have a link: devDependency`).toHaveProperty(specifier)
@@ -146,6 +175,7 @@ describe('dependency symmetry', () => {
       'agentDefaultModel',
       'agentPresets',
       'llm',
+      'connection',
     ])
     // Required: `setup` (`agentPresets.mount`) is what joins the session to
     // its tool/AGENTS.md/persona composition — without it the bridge mints a
@@ -159,5 +189,18 @@ describe('dependency symmetry', () => {
     // uninjected service with `cannot get property "llm" without inject` — so no
     // optional-read trick can stand in for the inject.
     expect(manifest.peerDependencies['@deepseek-ai/dsh-llm']).toBeDefined()
+    // And the fence: the browser half's reads are registered on the shared
+    // `/api` channel, which only exists as an injected service.
+    expect(manifest.peerDependencies['@deepseek-ai/dsh-client-connection']).toBeDefined()
+  })
+
+  test('the client bundle does not reach the host half values', () => {
+    // Shared facts live in `src/config.ts`; a browser module importing the entry
+    // module would drag `node:http`, `webServer` and the observer into the page.
+    for (const file of typescriptFiles(join(packageRoot, 'src', 'client'))) {
+      const source = readFileSync(file, 'utf8')
+      expect(source, `${file} must not import the host entry`).not.toMatch(/from\s*'\.\.\/index\.ts'/)
+      expect(source, `${file} must not import node builtins`).not.toMatch(/from\s*'node:/)
+    }
   })
 })

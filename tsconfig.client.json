@@ -2,11 +2,11 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "jsx": "react-jsx",
-    "noEmit": true,
-    "rootDir": ".",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": ["node"]
+    "types": [],
+    "noEmit": false,
+    "emitDeclarationOnly": true
   },
-  "include": ["src", "test", "vitest.config.ts"],
+  "include": ["src/client", "src/config.ts"],
   "exclude": []
 }

@@ -1,8 +1,10 @@
 /**
  * dsh-debate-bridge: the loopback HTTP bridge that runs the debate Opponent as
- * a live Session inside the already-running `dsh web` host.
+ * a live Session inside the already-running `dsh web` host, plus the browser
+ * half's three fenced reads and the observer that links a Proposer-created
+ * debate to the Session that created it.
  *
- * Three `exact` routes, all OUTSIDE `/api` so no cookie or Origin fence
+ * Four `exact` routes, all OUTSIDE `/api` so no cookie or Origin fence
  * applies — the trust fence is applied per-channel in `HostConnectionService`
  * and the mux upgrade (`packages/client/connection/src/rpc-host.ts:97-100`,
  * `packages/api/gateway/src/index.ts:215`), not globally:
@@ -21,7 +23,12 @@
  * routes accept an arbitrary `prompt`, an arbitrary `workspacePath` and a
  * `danger-full-access` preset, i.e. exactly that risk, so this plugin refuses
  * to register unless the RESOLVED host is loopback. That converts an inherited
- * assumption into a local invariant.
+ * assumption into a local invariant, and it gates the whole plugin — the
+ * browser half's reads are useless without the GUI that draws them.
+ *
+ * The browser half's reads are registered instead on the admission-fenced `/api`
+ * channel, which is a different fence for a different caller: see
+ * `host/fenced-routes.ts`.
  *
  * @module dsh-debate-bridge
  */
@@ -29,16 +36,23 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 // Side-effect type imports: these declare the `webServer`, `agents`,
-// `agentDefaultModel`, `workspaceRegistry`, `permissionPresets`, `sessionTitle`
-// and `agentPresets` members this module reads.
+// `agentDefaultModel`, `workspaceRegistry`, `permissionPresets`, `sessionTitle`,
+// `agentPresets` and `connection` members this module reads.
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
+import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-workspace'
+import { brandString } from '@deepseek-ai/dsh-brand'
 import { errorChain } from '@deepseek-ai/dsh-llm'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import { createAttachRegistry } from './host/attach-registry.ts'
+import { createCreateObserver } from './host/create-observer.ts'
+import { registerFencedRoutes } from './host/fenced-routes.ts'
+import { createDebateConfirmer, normalizeBaseUrl } from './host/forward.ts'
 import { createRouteHost, listProviderModels } from './models.ts'
 import {
   parseJsonObject,
@@ -47,7 +61,10 @@ import {
   parseStopRequest,
   type StartRequest,
 } from './request.ts'
+import type { Config } from './schema.ts'
 import { createDebateSessions, resolveModelRoute, type SessionStatus } from './session.ts'
+
+export { Config } from './schema.ts'
 
 export const name = 'dsh-debate-bridge'
 
@@ -79,8 +96,13 @@ export const name = 'dsh-debate-bridge'
  * must not mount this bridge, because such a host can neither enumerate model
  * routes nor create a runnable session. The `web` profile mounts
  * `@deepseek-ai/dsh-llm`.
+ *
+ * `connection` carries the browser half's three fenced reads, and is required for
+ * the same mechanical reason: a route registered on an uninjected service is
+ * refused by the context proxy. `agents` is already injected for the session
+ * lifecycle and is what resolves a Session's lineage for the attach observer.
  */
-export const inject = ['webServer', 'agents', 'workspaceRegistry', 'permissionPresets', 'sessionTitle', 'agentDefaultModel', 'agentPresets', 'llm']
+export const inject = ['webServer', 'agents', 'workspaceRegistry', 'permissionPresets', 'sessionTitle', 'agentDefaultModel', 'agentPresets', 'llm', 'connection']
 
 /** The only bind host on which these routes may be registered. */
 export const LOOPBACK_HOST = '127.0.0.1'
@@ -234,15 +256,17 @@ async function readValidated<T>(
 }
 
 /**
- * Register the three bridge routes, or nothing at all.
+ * Register the four bridge routes and the browser half's Host side, or nothing
+ * at all.
  *
  * Registers nothing unless the resolved `webServer` host is exactly
  * {@link LOOPBACK_HOST}; the refusal is written to BOTH the Cordis logger and
  * stderr, because the composed `web` profile mounts no logger exporter and a
  * logger-only refusal would be invisible.
  * @param ctx - host context.
+ * @param config - validated live configuration resolved by the Loader.
  */
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: Config): void {
   const host = ctx.webServer.host
   if (host !== LOOPBACK_HOST) {
     const refusal = `dsh-debate-bridge: refusing to register — webServer is bound to "${host}", not "${LOOPBACK_HOST}". `
@@ -262,6 +286,49 @@ export function apply(ctx: Context): void {
   // (or is absent when this deployment mounts none), and neither changes while
   // the plugin is mounted.
   const routeHost = createRouteHost(ctx)
+
+  // ── The browser half's Host side ───────────────────────────────────────────
+  // The attachment store, the three fenced reads that serve it and the debate
+  // server, and the observer that establishes a Proposer attachment from the
+  // `aw debate create` tool result. None of it exists without the GUI, and none
+  // of it is reachable from outside the admitted `/api` channel.
+  const baseUrl = normalizeBaseUrl(config.debateServer.baseUrl)
+  const timeoutMs = config.debateServer.requestTimeoutMs
+  const token = resolveBearer(config.debateServer.authTokenEnv)
+  const registry = createAttachRegistry()
+  registerFencedRoutes(ctx, { baseUrl, timeoutMs, token, registry })
+
+  const observer = createCreateObserver({
+    registry,
+    // The walk needs each hop's own header, and only a live Agent holds one: a
+    // create runs in a live Session whose ancestors are live too, so an unknown
+    // hop simply stops the walk.
+    lineageOf: (sessionId) => {
+      const header = ctx.agents.get(brandString<SessionId>(sessionId))?.session.header
+      if (header === undefined) return undefined
+      return {
+        id: header.id,
+        ...header.parentSession === undefined ? {} : { parentSession: header.parentSession },
+        ...header.origin === undefined ? {} : { origin: header.origin },
+      }
+    },
+    confirm: createDebateConfirmer({
+      baseUrl,
+      timeoutMs,
+      token,
+      fetch: async (url, call) => await fetch(url, {
+        method: call.method,
+        headers: { ...call.headers },
+        signal: call.signal,
+      }),
+    }),
+    note: message => { ctx.logger.debug(message) },
+    now: () => Date.now(),
+  })
+  ctx.effect(() => {
+    const dispose = ctx.on('session/event', (session, event) => { observer.observe(session, event) })
+    return () => { dispose() }
+  }, 'dsh-debate-bridge: create observer')
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -365,9 +432,28 @@ export function apply(ctx: Context): void {
   }), `dsh-debate-bridge: GET ${MODELS_ROUTE}`)
 }
 
+/**
+ * Resolve the configured bearer from the environment variable it names.
+ *
+ * Declared here rather than imported from `host/forward.ts` so the entry module
+ * states what the deployment must provide; the resolution rule itself is shared.
+ * @param authTokenEnv - environment variable name, or the empty string.
+ * @returns the token, or `undefined` when none is configured.
+ */
+function resolveBearer(authTokenEnv: string): string | undefined {
+  const name = authTokenEnv.trim()
+  if (name === '') return undefined
+  const value = process.env[name]
+  return value === undefined || value === '' ? undefined : value
+}
+
 export type { OpenSessionInput, SessionStatus, RouteHost } from './session.ts'
 export type { ModelCatalogFailure, ModelCatalogResponse, ProviderModelOption } from './models.ts'
 export { createRouteHost, listProviderModels } from './models.ts'
 export type { StartRequest, StatusRequest, StopRequest } from './request.ts'
+export type { DebateAttachment, AttachRegistry, SessionLineage } from './host/attach-registry.ts'
+export { createAttachRegistry } from './host/attach-registry.ts'
+export type { CreateObserver, CreateObserverOptions } from './host/create-observer.ts'
+export { createCreateObserver } from './host/create-observer.ts'
 export type { DebateOpponentSource } from './source.ts'
 export { DEBATE_OPPONENT_SOURCE_KIND } from './source.ts'

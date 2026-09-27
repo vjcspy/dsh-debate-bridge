@@ -9,10 +9,13 @@
  * - the plugin composes through a real `cordis.yml` read by the real Loader,
  *   in the same shape `cordis.patch.yml` inserts into a profile.
  *
- * The six services the plugin injects are provided as recording stubs. That
- * is deliberate: the subjects under test are the plugin's OWN contract
- * (registration, validation, ordering, error bodies) and its loopback
- * self-check, not the harness's session stack.
+ * The services the plugin injects are provided as recording stubs, INCLUDING
+ * `connection`: the browser half's reads are registered on the shared `/api`
+ * channel, and a stub is enough to prove that registration because the channel
+ * — not this plugin — owns admission. That is deliberate: the subjects under
+ * test are the plugin's OWN contract (registration, validation, ordering, error
+ * bodies), its loopback self-check, and the read policy, not the harness's
+ * session stack or the channel's own admission.
  */
 
 import { existsSync } from 'node:fs'
@@ -22,12 +25,24 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
+import type { ConnectionFetchRoute } from '@deepseek-ai/dsh-client-connection'
 
 /** Repository root of this plugin package. */
 export const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 /** The artifact a profile install loads. */
 export const builtEntry = join(packageRoot, 'lib', 'index.js')
+
+/** One `session/event` payload as this plugin reads it. */
+export interface SessionEventLike {
+  /** Event discriminant. */
+  readonly type: string
+  /** Event payload. */
+  readonly data?: unknown
+}
+
+/** One root `session/event` listener, as the host dispatches it. */
+export type SessionEventListener = (session: { readonly id: string }, event: SessionEventLike) => void
 
 /** One recorded call, in arrival order. */
 export interface Call {
@@ -113,6 +128,20 @@ export interface Composition {
   /** Make `agents.create` throw this error instead of succeeding. */
   createThrows: unknown
   /**
+   * Every fenced route the plugin registered on `connection.fetch`, in
+   * registration order.
+   */
+  readonly routes: ConnectionFetchRoute[]
+  /** Bearer resolved for the fenced reads, when a spec configured one. */
+  bearer: string | undefined
+  /**
+   * The plugin's root `session/event` listeners, captured as the host's own
+   * dispatch would call them. Driving them directly keeps a spec independent of
+   * Cordis scope-filtered dispatch, which is the host's concern, not this
+   * plugin's.
+   */
+  readonly sessionListeners: SessionEventListener[]
+  /**
    * What the stub `agentDefaultModel.currentSelection()` reports. Mutable so a
    * spec can reproduce a host whose default model is complete, and one where it
    * is blank in either half — the latter must refuse the request rather than
@@ -156,6 +185,13 @@ export interface BootOptions {
   /** Mount the bridge entry in the generated `cordis.yml`; default `true`. */
   readonly withBridge?: boolean
   /**
+   * Debate-server origin written into the plugin's `config` row, so a spec can
+   * point the fenced reads at a real local server.
+   */
+  readonly debateServerUrl?: string
+  /** Environment name the plugin resolves its bearer from, written into the same row. */
+  readonly authTokenEnv?: string
+  /**
    * Publish the stub `llm` service; default `true`. `false` reproduces a
    * deployment that mounts no LLM service, where the route check cannot run.
    */
@@ -183,6 +219,9 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
     resumeWith: undefined,
     getAnswers: [],
     createThrows: undefined,
+    routes: [],
+    bearer: undefined,
+    sessionListeners: [],
     defaultModel: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
     llm: {
       resolveCall: null,
@@ -197,6 +236,18 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
 
   const ctx = new Context()
   composition.ctx = ctx
+
+  // `session/event` is delivered through Cordis scope-filtered dispatch, which
+  // needs a live Session carrier. The plugin's own listener is what these specs
+  // exercise, so it is captured here and called directly.
+  const eventHost = ctx as unknown as {
+    on(name: string, listener: SessionEventListener): () => void
+  }
+  const originalOn = eventHost.on.bind(ctx)
+  eventHost.on = (name, listener) => {
+    if (name === 'session/event') composition.sessionListeners.push(listener)
+    return originalOn(name, listener)
+  }
 
   // The canonical directory the registry would report for a request path. It is
   // deliberately DIFFERENT from the request spelling: `meta.cwd` must come from
@@ -280,6 +331,24 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
       return { id: id ?? 'standard' }
     },
   })
+  // The shared `/api` channel's host registry. Admission belongs to the real
+  // channel and is verified in the browser; what these specs prove is that the
+  // plugin registers THROUGH this seam rather than on `webServer`, which is what
+  // makes the channel's admission apply at all.
+  provide(ctx, 'connection', {
+    fetch: {
+      register(route: ConnectionFetchRoute) {
+        record('connection.fetch.register', route.path)
+        composition.routes.push(route)
+        return async () => {}
+      },
+    },
+  })
+  if (options.authTokenEnv !== undefined) {
+    process.env[options.authTokenEnv] = 'spec-token'
+    composition.bearer = 'spec-token'
+  }
+
   provide(ctx, 'agentDefaultModel', {
     currentSelection() {
       record('agentDefaultModel.currentSelection')
@@ -332,8 +401,20 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
     '    host: \'127.0.0.1\'',
     '    port: 0',
     ...withBridge
-      // Exactly the entry `cordis.patch.yml` inserts.
-      ? ['- id: dsh-debate-bridge', '  name: \'dsh-debate-bridge\'']
+      // Exactly the entry `cordis.patch.yml` inserts, plus the `config` row the
+      // plugin now accepts.
+      ? [
+        '- id: dsh-debate-bridge',
+        '  name: \'dsh-debate-bridge\'',
+        ...options.debateServerUrl === undefined && options.authTokenEnv === undefined
+          ? []
+          : [
+            '  config:',
+            '    debateServer:',
+            ...options.debateServerUrl === undefined ? [] : [`      baseUrl: '${options.debateServerUrl}'`],
+            ...options.authTokenEnv === undefined ? [] : [`      authTokenEnv: '${options.authTokenEnv}'`],
+          ],
+      ]
       : [],
     '',
   ].join('\n'), 'utf8')
@@ -355,6 +436,7 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
   const previousDispose = composition.dispose
   composition.dispose = async () => {
     await ctx.fiber.dispose()
+    if (options.authTokenEnv !== undefined) delete process.env[options.authTokenEnv]
     await previousDispose()
   }
   return composition
@@ -380,6 +462,28 @@ export async function post(
     // A non-JSON body is a failure of the route under test, surfaced by `text`.
   }
   return { status: response.status, json, text }
+}
+
+/**
+ * Call one fenced route through the registry the plugin registered into.
+ *
+ * The real channel would have applied admission before reaching this point; the
+ * stub stands in for that layer, so a spec here asserts the read policy and the
+ * registration, never admission (which is proven in the browser).
+ * @param composition - a booted composition.
+ * @param target - fenced pathname plus query string.
+ * @param method - HTTP method to dispatch.
+ * @returns the route's response.
+ */
+export async function callFenced(
+  composition: Composition,
+  target: string,
+  method = 'GET',
+): Promise<Response> {
+  const url = new URL(target, `http://127.0.0.1:${String(composition.port)}`)
+  const route = composition.routes.find(candidate => candidate.path === url.pathname)
+  if (route === undefined) throw new Error(`no fenced route registered for ${url.pathname}`)
+  return await route.fetch(new Request(url, { method }))
 }
 
 /** A valid start body for the given debate. */

@@ -333,6 +333,9 @@ test('a composition that mounts no llm service does NOT mount the bridge (loud, 
   provide(ctx, 'permissionPresets', { defaultPreset: 'workspace-write', resolve: () => ({}), set: () => {} })
   provide(ctx, 'sessionTitle', { rename: () => {} })
   provide(ctx, 'agentDefaultModel', { currentSelection: () => ({ provider: 'p', model: 'm' }) })
+  // `connection` is present, so the empty result is caused by the ABSENT `llm`
+  // service and not by a second uninjected seam.
+  provide(ctx, 'connection', { fetch: { register: () => async () => {} } })
   await ctx.plugin(built as never, undefined as never)
   await ctx.fiber.dispose()
   expect(paths).toEqual([])
@@ -359,6 +362,9 @@ test('the loopback self-check refuses to register on a non-loopback host', async
     provide(ctx, 'sessionTitle', { rename: () => {} })
     provide(ctx, 'agentPresets', { resolve: async (id: string) => ({ id }) })
     provide(ctx, 'agentDefaultModel', { currentSelection: () => ({ provider: 'p', model: 'm' }) })
+    // The browser half's reads are registered on the connection channel, which
+    // must therefore resolve for this mount to reach the four loopback verbs.
+    provide(ctx, 'connection', { fetch: { register: () => async () => {} } })
     // `llm` is injected by the plugin, so the mount needs it present for the
     // positive control below; the absence case is its own test above.
     provide(ctx, 'llm', {

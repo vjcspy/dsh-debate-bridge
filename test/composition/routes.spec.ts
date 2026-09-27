@@ -161,6 +161,24 @@ test('the bundle patch and the generated config describe the same entry shape', 
   const patch = patchFileText()
   expect(patch).toContain('id: dsh-debate-bridge')
   expect(patch).toContain("name: 'dsh-debate-bridge'")
-  // No `config` row: every input arrives in the request body.
-  expect(patch).not.toContain('config:')
+  // The original "no `config` row" stance changed with the browser half: the
+  // upstream origin is a deployment fact. The patch must DOCUMENT the row and
+  // its defaults, while shipping no `config:` block of its own — naming no row
+  // at all is the normal deployment.
+  expect(patch).toContain('debateServer:')
+  expect(patch).toContain('baseUrl: http://127.0.0.1:3456')
+  expect(patch).toContain('authTokenEnv')
+  expect(patch.split('\n').filter(line => line.startsWith('config:'))).toEqual([])
 })
+
+test('the browser half\'s fenced reads are NOT on the webServer surface', async () => {
+  composition = await boot()
+  // The four loopback verbs live outside `/api` and keep doing so; the browser
+  // half's reads are registered on the shared connection channel instead, which
+  // owns admission. A `webServer` that answered them would be reachable with no
+  // cookie at all, which is exactly what the fence exists to prevent.
+  for (const path of ['/api/dsh-debate/debates', '/api/dsh-debate/debate', '/api/dsh-debate/attach']) {
+    const response = await fetch(`http://127.0.0.1:${String(composition.port)}${path}`)
+    expect(response.status, `${path} must not be served by webServer`).toBe(404)
+  }
+}, 60_000)
