@@ -196,6 +196,13 @@ export interface BootOptions {
    * deployment that mounts no LLM service, where the route check cannot run.
    */
   readonly withLlm?: boolean
+  /**
+   * Mount the REAL `@deepseek-ai/dsh-shell-env` service; default `true`, the
+   * composition the `web` profile boots. `false` reproduces a deployment that
+   * mounts no shell-env service, where the bridge's optional `shellEnv` inject
+   * must simply never fire — the debate routes are the half that must survive.
+   */
+  readonly withShellEnv?: boolean
 }
 
 /**
@@ -394,12 +401,19 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
   const Loader = (await import('@deepseek-ai/cordis-plugin-loader')).default
   const Include = (await import('@deepseek-ai/cordis-plugin-include')).default
   const WebServer = (await import('@deepseek-ai/dsh-host-webserver')).default
+  // The REAL registry, not a stub: the contributor's declaration is validated
+  // by the registry itself (namespace, reserved keys, description), and that
+  // validation is the thing a stub would hide.
+  const ShellEnv = await import('@deepseek-ai/dsh-shell-env')
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
     '- name: \'@deepseek-ai/dsh-host-webserver\'',
     '  config:',
     '    host: \'127.0.0.1\'',
     '    port: 0',
+    // Mounted BEFORE the bridge, as a profile would: the nested optional inject
+    // resolves on mount when the service is already there.
+    ...((options.withShellEnv ?? true) ? ['- name: \'@deepseek-ai/dsh-shell-env\''] : []),
     ...withBridge
       // Exactly the entry `cordis.patch.yml` inserts, plus the `config` row the
       // plugin now accepts.
@@ -426,6 +440,7 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
     async import(specifier: string) {
       if (specifier === 'dsh-debate-bridge') return built
       if (specifier === '@deepseek-ai/dsh-host-webserver') return WebServer
+      if (specifier === '@deepseek-ai/dsh-shell-env') return ShellEnv
       throw new Error(`unexpected Loader import: ${specifier}`)
     },
   } as unknown as NonNullable<typeof ctx.loader.internal>

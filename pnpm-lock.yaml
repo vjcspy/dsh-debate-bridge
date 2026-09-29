@@ -74,6 +74,9 @@ importers:
       '@deepseek-ai/dsh-session-title':
         specifier: link:../deepseek-harness/packages/session/session-title
         version: link:../deepseek-harness/packages/session/session-title
+      '@deepseek-ai/dsh-shell-env':
+        specifier: link:../deepseek-harness/packages/shell/shell-env
+        version: link:../deepseek-harness/packages/shell/shell-env
       '@deepseek-ai/dsh-workspace':
         specifier: link:../deepseek-harness/packages/workspace/workspace
         version: link:../deepseek-harness/packages/workspace/workspace

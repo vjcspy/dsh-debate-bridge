@@ -30,6 +30,10 @@
  * channel, which is a different fence for a different caller: see
  * `host/fenced-routes.ts`.
  *
+ * A fifth, non-HTTP contribution rides the same mount: the optional
+ * `ctx.shellEnv` contributor that publishes the calling session's ACTIVE route
+ * as `DSH_PROPOSER_MODEL` (`src/shell-env.ts`).
+ *
  * @module dsh-debate-bridge
  */
 
@@ -37,7 +41,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 // Side-effect type imports: these declare the `webServer`, `agents`,
 // `agentDefaultModel`, `workspaceRegistry`, `permissionPresets`, `sessionTitle`,
-// `agentPresets` and `connection` members this module reads.
+// `agentPresets`, `connection` and `shellEnv` members this module reads.
 import type {} from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
@@ -45,6 +49,7 @@ import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-session-title'
+import type {} from '@deepseek-ai/dsh-shell-env'
 import type {} from '@deepseek-ai/dsh-workspace'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { errorChain } from '@deepseek-ai/dsh-llm'
@@ -63,6 +68,7 @@ import {
 } from './request.ts'
 import type { Config } from './schema.ts'
 import { createDebateSessions, resolveModelRoute, type SessionStatus } from './session.ts'
+import { createProposerModelContributor, DSH_PROPOSER_MODEL_ENV } from './shell-env.ts'
 
 export { Config } from './schema.ts'
 
@@ -430,6 +436,25 @@ export function apply(ctx: Context, config: Config): void {
       }
     },
   }), `dsh-debate-bridge: GET ${MODELS_ROUTE}`)
+
+  // ── The managed shell env ──────────────────────────────────────────────────
+  // Publishes the ACTIVE route of the Agent that runs a shell call, so a debate
+  // proposed from DSH carries its model into `aw debate create`.
+  //
+  // A NESTED, OPTIONAL inject on purpose — the root `inject` list above is
+  // all-required, so naming `shellEnv` there would make every debate route
+  // unavailable on a composition that mounts no shell-env service, which is a
+  // far worse failure than a missing env variable. `shellEnv` is an optional
+  // peer for the same reason: the contributor is a bonus fact, not a
+  // precondition. The `ctx.effect` wrapper owns disposal, so a plugin reload
+  // releases the registration (and the registry's per-key ownership) before the
+  // replacement registers.
+  ctx.inject(['shellEnv'], (shellEnvCtx) => {
+    shellEnvCtx.effect(() => {
+      const dispose = shellEnvCtx.shellEnv.register(createProposerModelContributor())
+      return () => { dispose() }
+    }, `dsh-debate-bridge: ${DSH_PROPOSER_MODEL_ENV} contributor`)
+  })
 }
 
 /**
