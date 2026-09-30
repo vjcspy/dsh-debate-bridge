@@ -11,21 +11,32 @@
  * every state this plugin renders follows light and dark themes without a second
  * definition.
  *
- * The layout mirrors `debate-web`'s information design — a scrollable arena list
- * beside the selected debate's transcript — without sharing its components, its
- * Tailwind, or its colour literals.
+ * The layout is the selected debate's transcript, the debate list when the user
+ * asks for it, and the rail that owns that list — all one flex row, so the rail's
+ * 40px sits inside the sidebar column instead of being added beyond it. The
+ * entry body no longer pre-wraps its text: the content is Markdown, and the
+ * renderer supplies its own block layout.
  *
  * @module dsh-debate-bridge/client/styles
  */
 import type { Context } from '@deepseek-ai/cordis'
 
 import { PLUGIN_ID } from '../config.ts'
+import { NARROW_MAX_WIDTH } from './attach-watch.ts'
 
 /** The body root's scoping attribute. */
 export const ARENA_ROOT_ATTRIBUTE = 'data-dsh-debate'
 
 /** The scoping attribute's value; the body sets exactly this on its root. */
 export const ARENA_ROOT_VALUE = 'arena'
+
+/**
+ * The root attribute carrying the derived panel visibility.
+ *
+ * Distinct from any stored boolean: `DebateArenaBody` writes the state the user
+ * actually sees, which is also what the narrow rule keys on.
+ */
+export const ARENA_EXPANDED_ATTRIBUTE = 'data-list-expanded'
 
 /** Stylesheet identity reported through the owned style element's `data-plugin-css`. */
 const STYLE_ID = `${PLUGIN_ID}/arena`
@@ -45,20 +56,12 @@ const STYLESHEET = `
 [${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] *::before,
 [${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] *::after { box-sizing: border-box; }
 
-/* ── Split: arena list beside the transcript ──────────────────────────────── */
+/* ── Split: the transcript, the list panel, and the rail ─────────────────── */
 [${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-split {
   display: flex;
   flex: 1;
   min-height: 0;
   min-width: 0;
-}
-[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-arena {
-  display: flex;
-  flex-direction: column;
-  flex: 0 0 42%;
-  min-width: 0;
-  min-height: 0;
-  border-right: 0.5px solid var(--dsw-alias-border-l2);
 }
 [${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-detail {
   display: flex;
@@ -66,6 +69,29 @@ const STYLESHEET = `
   flex: 1;
   min-width: 0;
   min-height: 0;
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-arena {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 40%;
+  min-width: 0;
+  min-height: 0;
+  border-left: 0.5px solid var(--dsw-alias-border-l2);
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 40px;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 0;
+  border-left: 0.5px solid var(--dsw-alias-border-l2);
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-rail-count {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 /* ── Section headers ─────────────────────────────────────────────────────── */
@@ -169,12 +195,13 @@ const STYLESHEET = `
   font-size: 11px;
   color: var(--dsw-alias-label-tertiary);
 }
+/* The Markdown renderer owns the content's block layout, so this wrapper only
+   keeps a long unbroken token inside the card. Deliberately not
+   \`overflow-wrap: anywhere\`: that also feeds min-content sizing, which would
+   let a rendered table's columns collapse in a narrow card. */
 [${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-entry-body {
   margin: 0;
-  font: inherit;
-  line-height: 19px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 /* ── States ──────────────────────────────────────────────────────────────── */
@@ -193,6 +220,15 @@ const STYLESHEET = `
   font-size: 12px;
   line-height: 18px;
   overflow-wrap: anywhere;
+}
+
+/* ── Narrow viewport: the panel takes the pane, the transcript yields ────── */
+@media (max-width: ${NARROW_MAX_WIDTH - 1}px) {
+  [${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'][${ARENA_EXPANDED_ATTRIBUTE}='true'] .dda-arena {
+    flex: 1 1 auto;
+    border-left: none;
+  }
+  [${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'][${ARENA_EXPANDED_ATTRIBUTE}='true'] .dda-detail { display: none; }
 }
 `
 

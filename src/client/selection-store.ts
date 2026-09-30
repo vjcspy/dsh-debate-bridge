@@ -1,16 +1,21 @@
 /**
  * The board's selection store, and the rule that resolves which debate is shown.
  *
- * Only the MANUAL pick is store state. The Opponent prefix rule and the Host's
- * attachment are stateless reads of facts the plugin already has, so storing
- * them would mirror an external snapshot into a second store; the client rules
- * keep business data in its owning service and let a declared store carry
- * viewing state only.
+ * Only viewing state is store state: the MANUAL pick and the debate list's
+ * visibility. The Opponent prefix rule and the Host's attachment are stateless
+ * reads of facts the plugin already has, so storing them would mirror an
+ * external snapshot into a second store; the client rules keep business data in
+ * its owning service and let a declared store carry viewing state only.
  *
  * The store exists at all because `keepMounted` is `false`: the dock renders a
  * body only while its tab is visited, retained or selected in the active pane,
- * so switching to another tab in the same pane unmounts the board. A pick stored
- * in component state would be lost on every such switch.
+ * so switching to another tab in the same pane unmounts the board. A pick, or a
+ * panel toggle, held in component state would be lost on every such switch.
+ *
+ * The registration targets a slot declared `scope: 'session'`, so the renderer
+ * resolves one instance per Session key, and no `persist` key is declared:
+ * `listExpanded` starts collapsed in every Session, survives a tab-switch
+ * remount inside the Session it was set in, and resets on reload.
  *
  * @module dsh-debate-bridge/client/selection-store
  */
@@ -32,13 +37,21 @@ export interface ManualPick {
   readonly basis: string | null
 }
 
-/** State: the manual picks, keyed by Session id. */
+/** State: the manual picks, keyed by Session id, plus the list's visibility. */
 export interface DebateSelectionState {
   /** One entry per Session the user has picked a debate in. */
   readonly manual: Record<string, ManualPick>
+  /**
+   * Whether the user opened the debate-list panel in the Session being drawn.
+   *
+   * A preference of the Session it is set in, not a layout fact: the body
+   * derives the visible state from this and the selection together. Not
+   * `readonly`, because {@link DebateSelectionActions.setListExpanded} writes it.
+   */
+  listExpanded: boolean
 }
 
-/** The store's complete write set: a click, and nothing else. */
+/** The store's complete write set: a click, and the list panel's toggle. */
 type DebateSelectionActions = {
   /**
    * Record the user's pick for one Session.
@@ -48,10 +61,16 @@ type DebateSelectionActions = {
    * @param basis - that Session's attachment at click time.
    */
   choose: (draft: DebateSelectionState, sessionId: string, debateId: string, basis: string | null) => void
+  /**
+   * Record the debate list's visibility for one Session.
+   * @param draft - store draft.
+   * @param next - the visibility the user asked for.
+   */
+  setListExpanded: (draft: DebateSelectionState, next: boolean) => void
 }
 
 /**
- * Declare the manual-pick state and its write surface.
+ * Declare the viewing state and its write surface.
  *
  * A factory rather than a module-level handle: a module-level store would be a
  * de-facto singleton shared across activations.
@@ -60,10 +79,13 @@ type DebateSelectionActions = {
  */
 export function createDebateSelectionStore(): EngineStoreHandle<DebateSelectionState, DebateSelectionActions> {
   return defineStore({
-    init: (): DebateSelectionState => ({ manual: {} }),
+    init: (): DebateSelectionState => ({ manual: {}, listExpanded: false }),
     actions: {
       choose: (draft, sessionId, debateId, basis) => {
         draft.manual[sessionId] = { debateId, basis }
+      },
+      setListExpanded: (draft, next) => {
+        draft.listExpanded = next
       },
     },
   })

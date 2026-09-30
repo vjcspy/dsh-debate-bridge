@@ -1,19 +1,23 @@
 /**
- * The board's selection rule and the manual-pick store.
+ * The board's selection rule and the viewing state its store owns.
  *
  * The rule is the whole reason the store exists: an explicit click must win over
  * a derived answer, but only while the attachment it was made against still
  * holds — otherwise a debate created later in the same Session would be hidden
  * behind an older click.
+ *
+ * The store's own tests describe ONE instance. The renderer resolves one per
+ * Session key, because the slot this half registers into is declared
+ * `scope: 'session'`, so nothing here may assume a process-wide singleton.
  */
 import { describe, expect, test } from 'vitest'
 
 import { createDebateSelectionStore, resolveSelectedDebate } from '../../src/client/selection-store.ts'
 
 describe('createDebateSelectionStore', () => {
-  test('starts with no pick', () => {
+  test('one instance starts with no pick and a collapsed list', () => {
     const instance = createDebateSelectionStore().create()
-    expect(instance.getSnapshot()).toEqual({ manual: {} })
+    expect(instance.getSnapshot()).toEqual({ manual: {}, listExpanded: false })
   })
 
   test('records one pick per Session', () => {
@@ -41,11 +45,38 @@ describe('createDebateSelectionStore', () => {
     expect(notified).toBe(1)
   })
 
-  test('two handles are independent instances', () => {
+  test('records the list visibility the user asked for, in both directions', () => {
+    const instance = createDebateSelectionStore().create()
+    instance.actions.setListExpanded(true)
+    expect(instance.getSnapshot().listExpanded).toBe(true)
+    instance.actions.setListExpanded(false)
+    expect(instance.getSnapshot().listExpanded).toBe(false)
+  })
+
+  test('keeps the pick and the list visibility as separate facts', () => {
+    const instance = createDebateSelectionStore().create()
+    instance.actions.choose('session-1', 'debate-a', null)
+    instance.actions.setListExpanded(true)
+    expect(instance.getSnapshot()).toEqual({
+      manual: { 'session-1': { debateId: 'debate-a', basis: null } },
+      listExpanded: true,
+    })
+  })
+
+  test('notifies subscribers of a list toggle', () => {
+    const instance = createDebateSelectionStore().create()
+    let notified = 0
+    instance.subscribe(() => { notified += 1 })
+    instance.actions.setListExpanded(true)
+    expect(notified).toBe(1)
+  })
+
+  test('two handles are independent instances, list visibility included', () => {
     const first = createDebateSelectionStore().create()
     const second = createDebateSelectionStore().create()
     first.actions.choose('session-1', 'debate-a', null)
-    expect(second.getSnapshot().manual).toEqual({})
+    first.actions.setListExpanded(true)
+    expect(second.getSnapshot()).toEqual({ manual: {}, listExpanded: false })
   })
 })
 

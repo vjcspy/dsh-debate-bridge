@@ -106,7 +106,9 @@ describe('identity', () => {
     expect(manifest.description).toContain('Debate Arena')
     // The stale count is gone: four loopback routes, not three.
     expect(manifest.description).not.toContain('Registers three')
-    expect(manifest.version).toBe('0.2.0')
+    // Pinned so a version move is deliberate: the profile refresh that follows a
+    // behaviour change is `remove` + `add`, and this manifest is what it reads.
+    expect(manifest.version).toBe('0.3.0')
   })
 
   test('BOTH halves exist, and the profile can load ./client', () => {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-debate-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "dsh plugin: debate bridge and arena. The host half registers four loopback-only HTTP routes on the running `dsh web` host and creates, attaches, permission-presets, titles and prompts the Opponent Session IN PROCESS, so the Session lands in the same SessionStore the Web GUI reads and appears live with no refresh; it also exposes the edge-derived idle signal the debate server's `dsh` provider needs and observes `aw debate create` tool results to link a Proposer debate to the Session that created it. The browser half adds a Debate Arena page tab to the core right sidebar and reads debates through three admission-fenced `/api` routes.",
   "type": "module",
   "main": "lib/index.js",

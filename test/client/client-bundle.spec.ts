@@ -90,9 +90,20 @@ function resolveModule(specifier: string): unknown {
   if (specifier === 'react-dom') return {}
   if (specifier === '@deepseek-ai/dsh-client-store') return ClientStore
   // The primitives are the shell's own components; a stand-in is enough because
-  // these specs never render.
+  // these specs never render. It carries the module-table surface this bundle
+  // reaches — the four atoms, the Markdown renderer, and the icon exports the
+  // rail and the panel header draw with.
   if (specifier === '@deepseek-ai/dsh-client-ui-primitives') {
-    return { Button: () => null, Tag: () => null, StateDot: () => null }
+    return {
+      Button: () => null,
+      Tag: () => null,
+      StateDot: () => null,
+      MarkdownText: () => null,
+      IconFlatListOutlineRegular: () => null,
+      IconChevronRightOutlineRegular: () => null,
+      IconCloseOutlineRegular: () => null,
+      IconRefreshOutlineRegular: () => null,
+    }
   }
   throw new Error(`unexpected require(${specifier}) — not a client baseline module`)
 }
