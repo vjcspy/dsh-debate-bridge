@@ -8,7 +8,7 @@
  *
  * The route table has ONE home. The Host registers an exact Fetch route per
  * fenced path below and forwards it upstream, and the browser half addresses the
- * same three paths — a second table would drift.
+ * same four paths — a second table would drift.
  *
  * @module dsh-debate-bridge/config
  */
@@ -40,6 +40,15 @@ export const LIST_PATH = `${FENCED_PREFIX}/debates`
 export const DETAIL_PATH = `${FENCED_PREFIX}/debate`
 
 /**
+ * Fenced path answering the running Opponent harness's own output buffer.
+ *
+ * Forwards to `/debates/<id>/provider/output` — the same buffer `debate-web`
+ * renders in the terminal at the bottom of its debate conversation. It is the
+ * fourth fenced read and the only one that carries more than one caller value.
+ */
+export const PROVIDER_OUTPUT_PATH = `${FENCED_PREFIX}/provider-output`
+
+/**
  * Fenced path answering the Session → debate attachment.
  *
  * Served from the Host's own in-memory registry, never forwarded: the
@@ -49,7 +58,8 @@ export const DETAIL_PATH = `${FENCED_PREFIX}/debate`
 export const ATTACH_PATH = `${FENCED_PREFIX}/attach`
 
 /**
- * Query parameter carrying the debate id on {@link DETAIL_PATH}.
+ * Query parameter carrying the debate id on {@link DETAIL_PATH} and
+ * {@link PROVIDER_OUTPUT_PATH}.
  *
  * `ConnectionFetchRoute.path` is an exact string, so the id travels as a query
  * parameter and the Host folds it into the upstream path; nothing the caller
@@ -57,11 +67,110 @@ export const ATTACH_PATH = `${FENCED_PREFIX}/attach`
  */
 export const DETAIL_ID_PARAM = 'id'
 
+/**
+ * Query parameter carrying the exclusive watermark on {@link PROVIDER_OUTPUT_PATH}.
+ *
+ * Optional: absent means "the whole buffer", which is exactly what opening a
+ * collapsed panel asks for.
+ */
+export const PROVIDER_OUTPUT_SINCE_PARAM = 'since'
+
 /** Query parameter carrying the Session id on {@link ATTACH_PATH}. */
 export const ATTACH_SESSION_PARAM = 'sessionId'
 
 /** Upstream collection the arena list reads. */
 export const UPSTREAM_DEBATES_PATH = '/debates'
+
+/**
+ * Upstream suffix appended after the `/debates/<id>` segment on
+ * {@link PROVIDER_OUTPUT_PATH}.
+ */
+export const UPSTREAM_PROVIDER_OUTPUT_SUFFIX = '/provider/output'
+
+/**
+ * The exact shape a debate id must have before it reaches an upstream path.
+ *
+ * ANCHORED and case-insensitive. Anchoring is what stops a partial match from
+ * smuggling a path segment: an unanchored pattern would accept a value whose
+ * leading characters merely look like a UUID. Every accepted value is exactly a
+ * UUID — no `.`, no `/`, no `?` — so the dot-segment escape measured against the
+ * old non-blank check (`encodeURIComponent('..') === '..'`, which resolves
+ * `http://host/debates/..` to the origin root) is unreachable by construction
+ * and needs no separate rule. Case-insensitive because a UUID's hex digits carry
+ * no case meaning: an upper-cased id names the same debate.
+ */
+export const DEBATE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The exact shape the watermark on {@link PROVIDER_OUTPUT_PATH} must have.
+ *
+ * Deliberately NOT generic ISO-8601. The debate server compares timestamps as
+ * raw strings (`entries.filter((e) => e.timestamp > since)`) and every entry's
+ * timestamp comes from `new Date().toISOString()` — fixed-width millisecond UTC.
+ * An ISO value without milliseconds compares GREATER than every entry of that
+ * second, because `'.' < 'Z'`, so accepting one would trade a loud `400` for a
+ * silently empty transcript.
+ */
+export const PROVIDER_OUTPUT_SINCE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
+/**
+ * Opponent providers whose provider-output buffer this plugin renders.
+ *
+ * ONE constant, because it is the single widening point: `codex-cli` and
+ * `opencode-cli` emit the same entry shape and are a one-word change here. The
+ * value is a PROVIDER name, not a proposer harness token — `claudecode` is the
+ * latter and never appears in `opponent_provider`, so a gate written against it
+ * could never match. It approximates `debate-web`'s own capability gate
+ * (`observability === 'terminal'`), narrowed to Claude Code on purpose.
+ */
+export const TRANSCRIPT_PROVIDER_ALLOWLIST: readonly string[] = ['claude-cli']
+
+/**
+ * How often the browser half re-reads the Opponent's output while the panel is
+ * open, in milliseconds.
+ *
+ * Tighter than the board's own poll because the panel is opt-in, short-lived and
+ * collapsed by default: while it is closed it costs nothing at all.
+ */
+export const TRANSCRIPT_POLL_INTERVAL_MS = 1500
+
+/**
+ * Milliseconds subtracted from the newest seen timestamp to build the watermark.
+ *
+ * The server's filter is a strict `>`, so a watermark equal to the newest
+ * timestamp drops every sibling entry sharing that millisecond — measured on a
+ * real run: four entries shared one millisecond, and `?since=<that timestamp>`
+ * returned 20 of the 24 entries visible at or after it. One millisecond of
+ * re-fetch is cheaper than losing text.
+ */
+export const TRANSCRIPT_SINCE_BACKOFF_MS = 1
+
+/**
+ * Ceiling on retained transcript lines.
+ *
+ * The buffer is a view, not a log: the panel shows the newest output, and the
+ * oldest lines are dropped once this bound is reached.
+ */
+export const TRANSCRIPT_MAX_LINES = 1000
+
+/**
+ * Per-ENTRY character budget, applied before any line cap.
+ *
+ * A global line cap alone is not enough: tool results are emitted untruncated,
+ * and one measured entry carried 38,771 characters across 451 newlines — a
+ * line-capped buffer would evict all model prose after a few file reads. Each
+ * entry is clamped head-and-tail to this budget first, and the global line cap
+ * then applies to what survives.
+ */
+export const TRANSCRIPT_ENTRY_MAX_CHARS = 4000
+
+/**
+ * Marker standing where an over-budget entry was clamped head-and-tail.
+ *
+ * A single visible character, so the clamp neither hides the loss nor invents
+ * structure, and plain text because the panel renders every entry as text.
+ */
+export const TRANSCRIPT_ENTRY_ELISION = '…'
 
 /** Debate-server origin applied when configuration names none. */
 export const DEFAULT_BASE_URL = 'http://127.0.0.1:3456'

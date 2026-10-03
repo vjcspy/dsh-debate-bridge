@@ -63,6 +63,13 @@ export const en = {
   'transcript.opponent': 'Opponent: {provider}',
   'transcript.unknownProvider': 'unknown',
 
+  // The Opponent transcript footer. Its title is the provider's own wire token,
+  // rendered verbatim like every other wire value on this board, so only the
+  // chrome around it is translated.
+  'transcript.panel.lines': '{count} line(s)',
+  'transcript.panel.empty': 'Waiting for the harness to emit output…',
+  'transcript.panel.failed': 'Not readable: {message}',
+
   // Chrome the Markdown primitive renders inside a card; it ships no fallback
   // copy of its own, so every one of these must resolve here.
   'markdown.code.copy': 'Copy',

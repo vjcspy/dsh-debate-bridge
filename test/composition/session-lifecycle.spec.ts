@@ -394,13 +394,32 @@ test('the loopback self-check refuses to register on a non-loopback host', async
 test('no provider name is hard-coded into the plugin surface', async () => {
   // The plugin is provider-agnostic by contract; the debate-server side owns the
   // `dsh` name. A name leaking in here would couple the two halves.
+  //
+  // ONE file is a declared exception: `src/config.ts`, which owns the single
+  // exported allowlist the Opponent transcript panel gates on. Having exactly one
+  // home for it IS the design — one constant, one widening point — so the
+  // invariant is asserted over every OTHER source file, and the exception is
+  // asserted POSITIVELY below rather than waved through.
   const { readFileSync, readdirSync, statSync } = await import('node:fs')
   const walk = (dir: string): string[] => readdirSync(dir).flatMap((entry) => {
     const path = join(dir, entry)
     return statSync(path).isDirectory() ? walk(path) : [path]
   })
-  const sources = walk(join(packageRoot, 'src')).map(file => readFileSync(file, 'utf8')).join('\n')
+  const files = walk(join(packageRoot, 'src'))
+  const allowlistOwner = join(packageRoot, 'src', 'config.ts')
+  expect(files).toContain(allowlistOwner)
+  const sources = files
+    .filter(file => file !== allowlistOwner)
+    .map(file => readFileSync(file, 'utf8'))
+    .join('\n')
   expect(sources).not.toContain('opencode-cli')
   expect(sources).not.toContain('claude-cli')
   expect(sources).not.toContain('codex-cli')
+
+  // The exception, positively: config.ts carries the exported allowlist, and the
+  // component that gates on it reads the constant instead of repeating a literal.
+  expect(readFileSync(allowlistOwner, 'utf8'))
+    .toContain("export const TRANSCRIPT_PROVIDER_ALLOWLIST: readonly string[] = ['claude-cli']")
+  expect(readFileSync(join(packageRoot, 'src', 'client', 'DebateArenaBody.tsx'), 'utf8'))
+    .toContain('TRANSCRIPT_PROVIDER_ALLOWLIST')
 })

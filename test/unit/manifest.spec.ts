@@ -95,9 +95,10 @@ describe('identity', () => {
     expect(patch).toContain('/dsh-debate/opponent/status')
     expect(patch).toContain('/dsh-debate/opponent/stop')
     expect(patch).toContain('/dsh-debate/models')
-    // And the three fenced reads the browser half calls.
+    // And the four fenced reads the browser half calls.
     expect(patch).toContain('/api/dsh-debate/debates')
     expect(patch).toContain('/api/dsh-debate/debate')
+    expect(patch).toContain('/api/dsh-debate/provider-output')
     expect(patch).toContain('/api/dsh-debate/attach')
   })
 
@@ -108,7 +109,7 @@ describe('identity', () => {
     expect(manifest.description).not.toContain('Registers three')
     // Pinned so a version move is deliberate: the profile refresh that follows a
     // behaviour change is `remove` + `add`, and this manifest is what it reads.
-    expect(manifest.version).toBe('0.3.0')
+    expect(manifest.version).toBe('0.4.0')
   })
 
   test('BOTH halves exist, and the profile can load ./client', () => {

@@ -2,13 +2,22 @@
  * The fenced reads' policy, without a network or a Cordis context.
  *
  * The upstream path is never caller-supplied, so the cases that matter are the
- * ones where a caller tries to make it so (an id carrying a separator or a query
- * string), plus the three mappings the channel would otherwise get wrong: an
- * unreachable server, a wrong verb, and an unreadable body.
+ * ones where a caller tries to make it so (an id that is not a UUID, a `..`
+ * segment, an undeclared query parameter), plus the three mappings the channel
+ * would otherwise get wrong: an unreachable server, a wrong verb, and an
+ * unreadable body.
  */
 import { describe, expect, test } from 'vitest'
 
-import { ATTACH_PATH, DETAIL_PATH, FENCED_PREFIX, LIST_PATH } from '../../src/config.ts'
+import {
+  ATTACH_PATH,
+  DEBATE_ID_PATTERN,
+  DETAIL_PATH,
+  FENCED_PREFIX,
+  LIST_PATH,
+  PROVIDER_OUTPUT_PATH,
+  PROVIDER_OUTPUT_SINCE_PARAM,
+} from '../../src/config.ts'
 import {
   createDebateConfirmer,
   forwardToUpstream,
@@ -21,6 +30,15 @@ import {
 } from '../../src/host/forward.ts'
 
 const BASE = 'http://127.0.0.1:3456'
+
+/** A debate id of the shape every id-keyed read now demands. */
+const DEBATE_ID = '46986e62-703d-4ace-9bc0-1adbab8f5507'
+
+/** A valid watermark, in exactly the shape `new Date().toISOString()` produces. */
+const SINCE = '2026-10-03T04:52:36.284Z'
+
+/** Every fenced path that reaches the debate server. */
+const FORWARDED_PATHS = [LIST_PATH, DETAIL_PATH, PROVIDER_OUTPUT_PATH]
 
 /** Plan one request, or fail the test with the refusal it produced. */
 function plan(path: string, method = 'GET'): ForwardPlan {
@@ -36,12 +54,23 @@ function upstreamResponse(status: number, body: string, contentType = 'applicati
 
 describe('route table', () => {
   test('every fenced read sits under the plugin prefix', () => {
-    for (const path of [LIST_PATH, DETAIL_PATH, ATTACH_PATH]) {
+    for (const path of [...FORWARDED_PATHS, ATTACH_PATH]) {
       expect(path.startsWith(`${FENCED_PREFIX}/`)).toBe(true)
       // The admission fence lives on `/api`; a path outside it would be served
       // with no cookie check at all.
       expect(path.startsWith('/api/')).toBe(true)
     }
+  })
+
+  test('the id pattern is anchored and case-insensitive', () => {
+    // Anchoring is the property that stops a partial match from smuggling a
+    // segment; case-insensitivity is what stops an upper-cased id being refused.
+    expect(DEBATE_ID_PATTERN.test(DEBATE_ID)).toBe(true)
+    expect(DEBATE_ID_PATTERN.test(DEBATE_ID.toUpperCase())).toBe(true)
+    expect(DEBATE_ID_PATTERN.test(`${DEBATE_ID}/../../secrets`)).toBe(false)
+    expect(DEBATE_ID_PATTERN.test(` ${DEBATE_ID}`)).toBe(false)
+    expect(DEBATE_ID_PATTERN.test('abc-123')).toBe(false)
+    expect(DEBATE_ID_PATTERN.test('..')).toBe(false)
   })
 })
 
@@ -70,17 +99,35 @@ describe('planForward', () => {
   })
 
   test('folds the debate id into the upstream path and drops the caller query', () => {
-    const plan = planForward({ method: 'GET', url: `http://host${DETAIL_PATH}?id=abc-123&limit=9` }, BASE, undefined)
+    const plan = planForward({ method: 'GET', url: `http://host${DETAIL_PATH}?id=${DEBATE_ID}&limit=9` }, BASE, undefined)
     expect(plan.ok).toBe(true)
     if (!plan.ok) return
-    expect(plan.plan.upstreamUrl).toBe(`${BASE}/debates/abc-123`)
+    expect(plan.plan.upstreamUrl).toBe(`${BASE}/debates/${DEBATE_ID}`)
   })
 
-  test('an id carrying a separator or a query cannot add a path segment', () => {
-    const plan = planForward({ method: 'GET', url: `http://host${DETAIL_PATH}?id=${encodeURIComponent('a/b?c=d')}` }, BASE, undefined)
+  test('accepts an upper-cased id, which names the same debate', () => {
+    const plan = planForward({ method: 'GET', url: `http://host${DETAIL_PATH}?id=${DEBATE_ID.toUpperCase()}` }, BASE, undefined)
     expect(plan.ok).toBe(true)
     if (!plan.ok) return
-    expect(plan.plan.upstreamUrl).toBe(`${BASE}/debates/a%2Fb%3Fc%3Dd`)
+    expect(plan.plan.upstreamUrl).toBe(`${BASE}/debates/${DEBATE_ID.toUpperCase()}`)
+  })
+
+  test('an id that is not a UUID is refused, never folded into the path', () => {
+    // `..` is the measured escape: `encodeURIComponent('..') === '..'`, and
+    // `new URL('http://host/debates/..').href` is the origin root. An anchored
+    // UUID pattern makes every one of these unreachable.
+    for (const value of ['..', 'a/b?c=d', '../providers', DEBATE_ID + '/../../secrets', 'abc-123', 'not-a-uuid']) {
+      const decision = planForward(
+        { method: 'GET', url: `http://host${DETAIL_PATH}?id=${encodeURIComponent(value)}` },
+        BASE,
+        undefined,
+      )
+      expect(decision.ok, value).toBe(false)
+      if (decision.ok) continue
+      expect(decision.refusal.status, value).toBe(400)
+      expect(decision.refusal.payload.error.code, value).toBe('INVALID_INPUT')
+      expect(decision.refusal.payload.error.message, value).toContain('a UUID')
+    }
   })
 
   test('a blank or missing id is a 400, not a read of the collection', () => {
@@ -93,8 +140,66 @@ describe('planForward', () => {
     }
   })
 
+  test('the provider-output read appends its declared suffix after the id segment', () => {
+    const plan = planForward({ method: 'GET', url: `http://host${PROVIDER_OUTPUT_PATH}?id=${DEBATE_ID}` }, BASE, undefined)
+    expect(plan.ok).toBe(true)
+    if (!plan.ok) return
+    expect(plan.plan.upstreamUrl).toBe(`${BASE}/debates/${DEBATE_ID}/provider/output`)
+  })
+
+  test('the provider-output read forwards the declared watermark and nothing else', () => {
+    const url = `http://host${PROVIDER_OUTPUT_PATH}?id=${DEBATE_ID}&${PROVIDER_OUTPUT_SINCE_PARAM}=${encodeURIComponent(SINCE)}&limit=9&evil=1`
+    const plan = planForward({ method: 'GET', url }, BASE, undefined)
+    expect(plan.ok).toBe(true)
+    if (!plan.ok) return
+    // Only `since` is declared by this row, so `limit` and `evil` are dropped:
+    // a caller cannot widen the read by inventing parameters.
+    expect(plan.plan.upstreamUrl).toBe(
+      `${BASE}/debates/${DEBATE_ID}/provider/output?${PROVIDER_OUTPUT_SINCE_PARAM}=${encodeURIComponent(SINCE)}`,
+    )
+  })
+
+  test('the provider-output read refuses a watermark that is not the exact toISOString shape', () => {
+    for (const value of [
+      'not-a-date',
+      // Generic ISO-8601 without milliseconds is the trap: the server compares
+      // raw strings, and `'.' < 'Z'`, so this value is greater than every entry
+      // of that second and would silently return nothing.
+      '2026-10-03T04:52:36Z',
+      '2026-10-03T04:52:36.28Z',
+      '2026-10-03 04:52:36.284Z',
+      '2026-10-03T04:52:36.284+00:00',
+    ]) {
+      const decision = planForward(
+        { method: 'GET', url: `http://host${PROVIDER_OUTPUT_PATH}?id=${DEBATE_ID}&${PROVIDER_OUTPUT_SINCE_PARAM}=${encodeURIComponent(value)}` },
+        BASE,
+        undefined,
+      )
+      expect(decision.ok, value).toBe(false)
+      if (decision.ok) continue
+      expect(decision.refusal.status, value).toBe(400)
+      expect(decision.refusal.payload.error.message, value).toContain('millisecond-precision')
+    }
+  })
+
+  test('a blank watermark is the same request as an absent one, and adds no parameter', () => {
+    for (const url of [`http://host${PROVIDER_OUTPUT_PATH}?id=${DEBATE_ID}`, `http://host${PROVIDER_OUTPUT_PATH}?id=${DEBATE_ID}&${PROVIDER_OUTPUT_SINCE_PARAM}=`, `http://host${PROVIDER_OUTPUT_PATH}?id=${DEBATE_ID}&${PROVIDER_OUTPUT_SINCE_PARAM}=%20`]) {
+      const plan = planForward({ method: 'GET', url }, BASE, undefined)
+      expect(plan.ok).toBe(true)
+      if (!plan.ok) return
+      expect(plan.plan.upstreamUrl).toBe(`${BASE}/debates/${DEBATE_ID}/provider/output`)
+    }
+  })
+
+  test('the provider-output read needs an id of its own', () => {
+    const decision = planForward({ method: 'GET', url: `http://host${PROVIDER_OUTPUT_PATH}` }, BASE, undefined)
+    expect(decision.ok).toBe(false)
+    if (decision.ok) return
+    expect(decision.refusal.status).toBe(400)
+  })
+
   test('a wrong verb is a 405 with Allow, never the channel 404', () => {
-    for (const path of [LIST_PATH, DETAIL_PATH]) {
+    for (const path of FORWARDED_PATHS) {
       const decision = planForward({ method: 'POST', url: `http://host${path}` }, BASE, undefined)
       expect(decision.ok).toBe(false)
       if (decision.ok) continue

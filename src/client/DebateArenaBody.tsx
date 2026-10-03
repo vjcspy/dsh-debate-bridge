@@ -18,6 +18,12 @@
  * to read. It is forced open when the Session has no debate and no pick, since
  * the panel is the only debate picker here.
  *
+ * The Opponent transcript is a second, independent footer under the transcript
+ * scroller. It has exactly ONE source of truth for what it describes — the
+ * transcript's own debate row — and it polls only while it is open, the tab is
+ * visible, the gate passes, the debate is not `CLOSED`, and the column it lives
+ * in is actually on screen.
+ *
  * @module dsh-debate-bridge/client/DebateArenaBody
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement } from 'react'
@@ -34,18 +40,30 @@ import {
 import type { InjectFace, PropsLocale, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 
-import { DETAIL_POLL_INTERVAL_MS, LOCALE_NAMESPACE } from '../config.ts'
-import type { DebateAttachmentSnapshot } from './attach-watch.ts'
+import {
+  DETAIL_POLL_INTERVAL_MS,
+  LOCALE_NAMESPACE,
+  TRANSCRIPT_ENTRY_ELISION,
+  TRANSCRIPT_ENTRY_MAX_CHARS,
+  TRANSCRIPT_MAX_LINES,
+  TRANSCRIPT_POLL_INTERVAL_MS,
+  TRANSCRIPT_PROVIDER_ALLOWLIST,
+  TRANSCRIPT_SINCE_BACKOFF_MS,
+} from '../config.ts'
+import { NARROW_MAX_WIDTH, type DebateAttachmentSnapshot } from './attach-watch.ts'
 import { EntryBody } from './EntryBody.tsx'
+import { OpponentTranscriptPanel } from './OpponentTranscriptPanel.tsx'
 import {
   fetchArena,
   fetchDebate,
+  fetchProviderOutput,
   type ArenaPage,
   type DebateEntry,
   type DebateRow,
   type DebateTranscript,
   type TransportFailure,
 } from './lib/debate-api.ts'
+import { createTranscriptBuffer, type TranscriptSnapshot } from './lib/transcript-buffer.ts'
 import { markdownLabels } from './markdown-labels.ts'
 import { resolveSelectedDebate, type ManualPick, type createDebateSelectionStore } from './selection-store.ts'
 import { ARENA_ROOT_VALUE } from './styles.ts'
@@ -189,6 +207,37 @@ export function DebateArenaBody(props: DebateArenaBodyProps): ReactElement {
   const scroller = useRef<HTMLDivElement | null>(null)
   const railToggle = useRef<HTMLButtonElement | null>(null)
 
+  // The Opponent transcript panel. Its buffer is a ref rather than state: the
+  // watermark and the accumulated lines are mutated by whichever response
+  // arrives, against the buffer's CURRENT state, so an overlapping pair of reads
+  // applied in either order can neither duplicate a line nor lose one.
+  const providerBuffer = useRef(createTranscriptBuffer({
+    maxLines: TRANSCRIPT_MAX_LINES,
+    entryMaxChars: TRANSCRIPT_ENTRY_MAX_CHARS,
+    elision: TRANSCRIPT_ENTRY_ELISION,
+    backoffMs: TRANSCRIPT_SINCE_BACKOFF_MS,
+  }))
+  const [providerOpen, setProviderOpen] = useState(false)
+  const [provider, setProvider] = useState<TranscriptSnapshot>(() => providerBuffer.current.snapshot())
+  const [providerFailure, setProviderFailure] = useState<TransportFailure | undefined>(undefined)
+
+  // The gate has exactly ONE source: the debate the transcript actually
+  // describes. Falling back to the arena list row would be a second source of
+  // truth — the list is page 0 only, so the selected debate may be absent from
+  // it, and the two 3000 ms polls run out of phase and can briefly disagree on
+  // `state`. Requiring the ids to agree is also what stops a stale transcript
+  // (a failed detail read never clears it) from describing a newly picked debate.
+  const gate = transcript !== undefined && transcript.debate.id === selected
+    ? transcript.debate
+    : undefined
+  const gateDebateId = gate !== undefined
+    && gate.state !== 'CLOSED'
+    && TRANSCRIPT_PROVIDER_ALLOWLIST.includes(gate.opponentProvider ?? '')
+    ? gate.id
+    : undefined
+  const gated = gateDebateId !== undefined
+  const gateLabel = gate?.opponentProvider ?? ''
+
   // The arena list is polled too, not only fetched once: a debate created while
   // the tab is already open would otherwise never appear in it. The rail's count
   // reads this same snapshot, so gating the poll on the panel would leave the
@@ -233,6 +282,56 @@ export function DebateArenaBody(props: DebateArenaBodyProps): ReactElement {
     const timer = setInterval(() => { void read() }, DETAIL_POLL_INTERVAL_MS)
     return () => { controller.abort(); clearInterval(timer) }
   }, [visible, selected, reloadToken])
+
+  // Collapsed means no traffic, and a debate switch must never render one
+  // debate's lines under another's header, so both reset the watermark and the
+  // accumulated lines together. Closing is included on purpose: reopening then
+  // replays the WHOLE buffer, which is what makes the panel show what happened
+  // while it was shut.
+  useEffect(() => {
+    if (providerOpen && gated) return
+    setProvider(providerBuffer.current.reset())
+    setProviderFailure(undefined)
+  }, [providerOpen, gated, selected])
+
+  // The transcript loop. It runs only while the panel is open, the tab is
+  // visible, the gate passes, and the column it lives in is actually on screen.
+  // That last condition is `!(isNarrow() && expanded)` and NOT a bare width
+  // test: the stylesheet hides `.dda-detail` in exactly one state — narrow
+  // viewport AND list expanded — so at <768 px with the list collapsed the column
+  // is perfectly visible and must keep streaming. `expanded` is a dependency so
+  // toggling the list re-evaluates the loop, and `isNarrow()` is read per tick so
+  // a resize does too.
+  useEffect(() => {
+    const debateId = gateDebateId
+    if (!visible || !providerOpen || debateId === undefined) return
+    const controller = new AbortController()
+    let inFlight = false
+    const read = async (): Promise<void> => {
+      // Skip a tick while a read is already in flight. The host deadline is
+      // 8000 ms against a 1500 ms interval, so an unguarded full replay over a
+      // slow link would stack duplicate large responses.
+      if (inFlight) return
+      if (typeof window !== 'undefined' && window.innerWidth < NARROW_MAX_WIDTH && expanded) return
+      inFlight = true
+      try {
+        const { since } = providerBuffer.current.request()
+        const result = await fetchProviderOutput(debateId, since, controller.signal)
+        if (controller.signal.aborted) return
+        if (result.ok) {
+          setProvider(providerBuffer.current.accept(result.value))
+          setProviderFailure(undefined)
+        } else {
+          setProviderFailure(result.failure)
+        }
+      } finally {
+        inFlight = false
+      }
+    }
+    void read()
+    const timer = setInterval(() => { void read() }, TRANSCRIPT_POLL_INTERVAL_MS)
+    return () => { controller.abort(); clearInterval(timer) }
+  }, [visible, providerOpen, gateDebateId, expanded, reloadToken])
 
   // Pin the transcript to its newest argument. Auto-scrolling on every content
   // change makes the scroll offset lost by the `keepMounted: false` unmount moot.
@@ -319,6 +418,23 @@ export function DebateArenaBody(props: DebateArenaBodyProps): ReactElement {
                 )}
               </div>
             </>
+          )}
+          {/* Last child of the conversation column, and OUTSIDE the
+              `transcript !== undefined` fragment above: the panel stays mounted
+              while the argument transcript is loading or failed, and is absent —
+              not empty — when there is no gated debate to watch. */}
+          {gated && (
+            <OpponentTranscriptPanel
+              open={providerOpen}
+              onToggle={() => { setProviderOpen(open => !open) }}
+              harnessLabel={gateLabel}
+              live={providerOpen && providerFailure === undefined && provider.lines.length > 0}
+              lines={provider.lines}
+              emptyLabel={t('transcript.panel.empty')}
+              statusLabel={providerFailure !== undefined
+                ? t('transcript.panel.failed', { message: providerFailure.message })
+                : t('transcript.panel.lines', { count: provider.lines.length })}
+            />
           )}
         </section>
 

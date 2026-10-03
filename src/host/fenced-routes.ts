@@ -1,5 +1,5 @@
 /**
- * Registration of the three fenced reads on the shared `/api` channel.
+ * Registration of the four fenced reads on the shared `/api` channel.
  *
  * The channel — not this plugin — owns admission: `connection.admit` runs in the
  * `/api` prefix handler before any route lookup, so a foreign `Host` is refused
@@ -26,6 +26,7 @@ import {
   ATTACH_SESSION_PARAM,
   DETAIL_PATH,
   LIST_PATH,
+  PROVIDER_OUTPUT_PATH,
 } from '../config.ts'
 import { MAX_SESSION_ID_CHARS } from '../request.ts'
 import type { AttachRegistry } from './attach-registry.ts'
@@ -147,6 +148,7 @@ export function registerFencedRoutes(ctx: Context, options: FencedRouteOptions):
   for (const route of [
     forwardRoute(LIST_PATH, options),
     forwardRoute(DETAIL_PATH, options),
+    forwardRoute(PROVIDER_OUTPUT_PATH, options),
     attachRoute(options),
   ]) {
     ctx.effect(() => {

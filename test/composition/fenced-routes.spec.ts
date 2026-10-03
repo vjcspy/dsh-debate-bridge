@@ -18,11 +18,19 @@ import {
   DETAIL_PATH,
   FENCED_PREFIX,
   LIST_PATH,
+  PROVIDER_OUTPUT_PATH,
+  PROVIDER_OUTPUT_SINCE_PARAM,
 } from '../../src/config.ts'
 import { boot, callFenced, type Composition } from './harness.ts'
 
 let composition: Composition | undefined
 let upstream: Upstream | undefined
+
+/** A debate id of the shape every id-keyed read demands. */
+const DEBATE_ID = '46986e62-703d-4ace-9bc0-1adbab8f5507'
+
+/** A valid watermark, in exactly the shape `new Date().toISOString()` produces. */
+const SINCE = '2026-10-03T04:52:36.284Z'
 
 afterEach(async () => {
   await composition?.dispose()
@@ -96,7 +104,7 @@ async function bootWithUpstream(): Promise<{ composition: Composition; upstream:
 
 test('registers every fenced read on the connection channel, under /api', async () => {
   const { composition: booted } = await bootWithUpstream()
-  expect(booted.routes.map(route => route.path)).toEqual([LIST_PATH, DETAIL_PATH, ATTACH_PATH])
+  expect(booted.routes.map(route => route.path)).toEqual([LIST_PATH, DETAIL_PATH, PROVIDER_OUTPUT_PATH, ATTACH_PATH])
   for (const route of booted.routes) {
     expect(route.path.startsWith(`${FENCED_PREFIX}/`)).toBe(true)
     // Both channel verbs are declared so a wrong verb answers 405 rather than
@@ -126,9 +134,9 @@ test('the arena read forwards the debate server collection with its query intact
 test('the transcript read folds the debate id into the upstream path', async () => {
   const { composition: booted, upstream: server } = await bootWithUpstream()
   server.route('/debates/', () => ({ status: 200, body: '{"success":true,"data":{"debate":{}}}' }))
-  const response = await callFenced(booted, `${DETAIL_PATH}?id=abc-123&limit=9`)
+  const response = await callFenced(booted, `${DETAIL_PATH}?id=${DEBATE_ID}&limit=9`)
   expect(response.status).toBe(200)
-  expect(server.requests[0]?.url).toBe('/debates/abc-123')
+  expect(server.requests[0]?.url).toBe(`/debates/${DEBATE_ID}`)
 }, 60_000)
 
 test('a transcript read with no id is refused without reaching upstream', async () => {
@@ -139,9 +147,53 @@ test('a transcript read with no id is refused without reaching upstream', async 
   expect(server.requests).toEqual([])
 }, 60_000)
 
+test('a transcript read with an id that is not a UUID is refused without reaching upstream', async () => {
+  const { composition: booted, upstream: server } = await bootWithUpstream()
+  for (const value of ['abc-123', '..', encodeURIComponent('../providers')]) {
+    const response = await callFenced(booted, `${DETAIL_PATH}?id=${value}`)
+    expect(response.status, value).toBe(400)
+    expect(await response.json(), value).toMatchObject({ success: false, error: { code: 'INVALID_INPUT' } })
+  }
+  expect(server.requests).toEqual([])
+}, 60_000)
+
+test('the provider-output read forwards the declared suffix and ONLY the declared watermark', async () => {
+  const { composition: booted, upstream: server } = await bootWithUpstream()
+  server.route('/debates/', () => ({ status: 200, body: '{"success":true,"data":[]}' }))
+  const response = await callFenced(
+    booted,
+    `${PROVIDER_OUTPUT_PATH}?id=${DEBATE_ID}&${PROVIDER_OUTPUT_SINCE_PARAM}=${encodeURIComponent(SINCE)}&limit=9&evil=1`,
+  )
+  expect(response.status).toBe(200)
+  expect(server.requests.map(request => request.url)).toEqual([
+    `/debates/${DEBATE_ID}/provider/output?${PROVIDER_OUTPUT_SINCE_PARAM}=${encodeURIComponent(SINCE)}`,
+  ])
+}, 60_000)
+
+test('the provider-output read asks for the whole buffer when no watermark is given', async () => {
+  const { composition: booted, upstream: server } = await bootWithUpstream()
+  server.route('/debates/', () => ({ status: 200, body: '{"success":true,"data":[]}' }))
+  const response = await callFenced(booted, `${PROVIDER_OUTPUT_PATH}?id=${DEBATE_ID}`)
+  expect(response.status).toBe(200)
+  expect(server.requests.map(request => request.url)).toEqual([`/debates/${DEBATE_ID}/provider/output`])
+}, 60_000)
+
+test('a malformed watermark is a 400 that never reaches upstream', async () => {
+  const { composition: booted, upstream: server } = await bootWithUpstream()
+  for (const value of ['not-a-date', '2026-10-03T04:52:36Z', '2026-10-03T04:52:36.284+00:00']) {
+    const response = await callFenced(
+      booted,
+      `${PROVIDER_OUTPUT_PATH}?id=${DEBATE_ID}&${PROVIDER_OUTPUT_SINCE_PARAM}=${encodeURIComponent(value)}`,
+    )
+    expect(response.status, value).toBe(400)
+    expect(await response.json(), value).toMatchObject({ success: false, error: { code: 'INVALID_INPUT' } })
+  }
+  expect(server.requests).toEqual([])
+}, 60_000)
+
 test('a wrong verb on a fenced read is 405 with Allow, not the channel 404', async () => {
   const { composition: booted, upstream: server } = await bootWithUpstream()
-  for (const path of [LIST_PATH, DETAIL_PATH, ATTACH_PATH]) {
+  for (const path of [LIST_PATH, DETAIL_PATH, PROVIDER_OUTPUT_PATH, ATTACH_PATH]) {
     const response = await callFenced(booted, path, 'POST')
     expect(response.status, path).toBe(405)
     expect(response.headers.get('allow'), path).toBe('GET')
@@ -245,8 +297,10 @@ test('a configured bearer is attached to every upstream read', async () => {
   upstream = await startUpstream()
   composition = await boot({ debateServerUrl: upstream.url, authTokenEnv: 'DSH_DEBATE_SPEC_TOKEN' })
   await callFenced(composition, LIST_PATH)
-  await callFenced(composition, `${DETAIL_PATH}?id=debate-1`)
+  await callFenced(composition, `${DETAIL_PATH}?id=${DEBATE_ID}`)
+  await callFenced(composition, `${PROVIDER_OUTPUT_PATH}?id=${DEBATE_ID}`)
   expect(upstream.requests.map(request => request.authorization)).toEqual([
+    'Bearer spec-token',
     'Bearer spec-token',
     'Bearer spec-token',
   ])
@@ -258,6 +312,6 @@ test('the four loopback routes still register outside /api and unchanged', async
   // caller is the `aw` CLI, which carries no browser cookie.
   expect(booted.routes.map(route => route.path).some(path => path.includes('/dsh-debate/opponent'))).toBe(false)
   expect(booted.calls.filter(call => call.what === 'connection.fetch.register').map(call => call.detail))
-    .toEqual([LIST_PATH, DETAIL_PATH, ATTACH_PATH])
+    .toEqual([LIST_PATH, DETAIL_PATH, PROVIDER_OUTPUT_PATH, ATTACH_PATH])
   expect(server.requests).toEqual([])
 }, 60_000)

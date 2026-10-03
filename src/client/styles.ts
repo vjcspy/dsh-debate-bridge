@@ -15,7 +15,9 @@
  * asks for it, and the rail that owns that list — all one flex row, so the rail's
  * 40px sits inside the sidebar column instead of being added beyond it. The
  * entry body no longer pre-wraps its text: the content is Markdown, and the
- * renderer supplies its own block layout.
+ * renderer supplies its own block layout. The conversation column is a flex
+ * COLUMN whose last child is the Opponent transcript footer, which keeps its own
+ * bounded height while the transcript above it keeps `flex: 1`.
  *
  * @module dsh-debate-bridge/client/styles
  */
@@ -202,6 +204,83 @@ const STYLESHEET = `
 [${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-entry-body {
   margin: 0;
   overflow-wrap: break-word;
+}
+
+/* ── Opponent transcript footer ───────────────────────────────────────────
+   A fixed-basis, non-growing row after the scroller is what makes this a footer
+   rather than another scroller: the transcript above keeps its own flex:1 and
+   shrinks, and this row takes exactly its content height. No position:sticky is
+   involved, and the parent's min-height:0 is left untouched. */
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider {
+  flex: 0 0 auto;
+  min-width: 0;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-2);
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider-head:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider-chevron {
+  display: inline-flex;
+  flex: none;
+  transition: transform 120ms ease;
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider-chevron[data-open='true'] {
+  transform: rotate(90deg);
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider-title {
+  flex: none;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider-status {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  color: var(--dsw-alias-label-tertiary);
+}
+/* Bounded height, so an expanded panel can never take the conversation column
+   from the transcript it sits under. */
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider-body {
+  max-height: 240px;
+  padding: 6px 12px 10px;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 16px;
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider-line {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-secondary);
+}
+/* Cosmetic only. The three wire types carry different meaning, and nothing here
+   is a contract: an unrecognised type renders as ordinary output text. */
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider-line[data-type='status'] {
+  color: var(--dsw-alias-label-tertiary);
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider-line[data-type='error'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+[${ARENA_ROOT_ATTRIBUTE}='${ARENA_ROOT_VALUE}'] .dda-provider-empty {
+  margin: 0;
+  padding: 4px 0;
+  color: var(--dsw-alias-label-tertiary);
 }
 
 /* ── States ──────────────────────────────────────────────────────────────── */

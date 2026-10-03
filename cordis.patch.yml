@@ -33,12 +33,20 @@
 #    and a `danger-full-access` preset.
 #
 # 2. A `Debate Arena` page tab in the core right sidebar (`dsh.client.platform:
-#    web`), served by three reads on the ADMISSION-FENCED `/api` channel —
-#    `GET /api/dsh-debate/debates`, `GET /api/dsh-debate/debate?id=`, and
+#    web`), served by four reads on the ADMISSION-FENCED `/api` channel —
+#    `GET /api/dsh-debate/debates`, `GET /api/dsh-debate/debate?id=`,
+#    `GET /api/dsh-debate/provider-output?id=&since=`, and
 #    `GET /api/dsh-debate/attach?sessionId=`. The first two forward to the debate
-#    server; the third answers from the plugin's in-memory Session→debate
-#    attachment, which an observer establishes by pairing an `aw debate create`
-#    tool call with its result.
+#    server; the third forwards to `/debates/<id>/provider/output` and carries
+#    the running Opponent harness's own output — the same buffer `debate-web`
+#    renders in its bottom terminal; the fourth answers from the plugin's
+#    in-memory Session→debate attachment, which an observer establishes by
+#    pairing an `aw debate create` tool call with its result.
+#
+#    `id` is validated as an anchored UUID and `since` against the exact
+#    `new Date().toISOString()` shape before either reaches the upstream URL, so
+#    a malformed value is a `400` rather than a read of something else; only
+#    parameters a row declares are ever forwarded.
 #
 #    This surface DOES have a `config` row — a deviation from the plugin's
 #    original "no config row" stance — because the upstream origin is a

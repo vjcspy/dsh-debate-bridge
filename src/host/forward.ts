@@ -17,18 +17,45 @@
  *   server's own envelope (`{ success, data }` / `{ success: false, error }`)
  *   reaches the board unaltered.
  *
- * The upstream path is NEVER caller-supplied. One route derives it from a single
- * validated query parameter ({@link DETAIL_PATH}), and the other two use a fixed
- * table entry, so this half cannot be turned into an open proxy.
+ * The upstream path is NEVER caller-supplied. The arena list reaches a fixed
+ * table entry; each id-keyed read derives its path from one validated query
+ * parameter — an anchored UUID — plus a suffix the ROW declares. Upstream query
+ * parameters are built with `new URL()` plus `searchParams.set` from the row's
+ * own declared list, so a caller can add no parameter the row did not declare,
+ * and none of these reads can be turned into an open proxy.
  *
  * @module dsh-debate-bridge/host/forward
  */
 import {
+  DEBATE_ID_PATTERN,
   DETAIL_ID_PARAM,
   DETAIL_PATH,
   LIST_PATH,
+  PROVIDER_OUTPUT_PATH,
+  PROVIDER_OUTPUT_SINCE_PARAM,
+  PROVIDER_OUTPUT_SINCE_PATTERN,
   UPSTREAM_DEBATES_PATH,
+  UPSTREAM_PROVIDER_OUTPUT_SUFFIX,
 } from '../config.ts'
+
+/**
+ * One declared query parameter of a fenced read.
+ *
+ * A parameter is FORWARDED because it is declared here, never because the caller
+ * sent it: the upstream URL is assembled from this list alone, so a caller
+ * cannot widen a read into a proxy by inventing a parameter.
+ */
+interface DeclaredParam {
+  /** Parameter name, spelled the same on the fenced path and upstream. */
+  readonly name: string
+  /**
+   * Anchored pattern the value must match, or `undefined` when any non-blank
+   * value is acceptable.
+   */
+  readonly pattern: RegExp | undefined
+  /** What the pattern accepts, phrased for a caller-facing refusal message. */
+  readonly expectation: string
+}
 
 /** One row of the allowlist: a fenced pathname and the upstream URL it reaches. */
 interface FencedRead {
@@ -38,18 +65,60 @@ interface FencedRead {
    * Query parameter whose value becomes a path segment upstream, or `undefined`
    * for a route whose upstream path is fixed.
    */
-  readonly pathParam: string | undefined
+  readonly pathParam: DeclaredParam | undefined
+  /**
+   * Path segment appended after the {@link pathParam} segment, so one row can
+   * reach a sub-resource of the debate it names. Empty when there is none.
+   */
+  readonly suffix: string
+  /**
+   * How the caller's query string reaches upstream. `passthrough` forwards it
+   * verbatim (the arena list is the debate server's own paginated collection and
+   * owns its own query vocabulary); `declared` forwards exactly
+   * {@link params} and drops everything else.
+   */
+  readonly query: 'passthrough' | 'declared'
+  /** Parameters forwarded upstream under `declared`; the whole forwarding set. */
+  readonly params: readonly DeclaredParam[]
+  /** Upstream path for a row that takes no path parameter; `undefined` otherwise. */
+  readonly fixedPath: string | undefined
 }
 
 /**
- * The two fenced paths that reach the debate server.
+ * The three fenced paths that reach the debate server.
  *
  * {@link ATTACH_PATH} is deliberately absent: it is answered from the Host's own
  * attachment registry, so it has no upstream to allowlist.
  */
 const FENCED_READS: readonly FencedRead[] = [
-  { path: LIST_PATH, pathParam: undefined },
-  { path: DETAIL_PATH, pathParam: DETAIL_ID_PARAM },
+  {
+    path: LIST_PATH,
+    pathParam: undefined,
+    suffix: '',
+    query: 'passthrough',
+    params: [],
+    fixedPath: UPSTREAM_DEBATES_PATH,
+  },
+  {
+    path: DETAIL_PATH,
+    pathParam: { name: DETAIL_ID_PARAM, pattern: DEBATE_ID_PATTERN, expectation: 'a UUID' },
+    suffix: '',
+    query: 'declared',
+    params: [],
+    fixedPath: undefined,
+  },
+  {
+    path: PROVIDER_OUTPUT_PATH,
+    pathParam: { name: DETAIL_ID_PARAM, pattern: DEBATE_ID_PATTERN, expectation: 'a UUID' },
+    suffix: UPSTREAM_PROVIDER_OUTPUT_SUFFIX,
+    query: 'declared',
+    params: [{
+      name: PROVIDER_OUTPUT_SINCE_PARAM,
+      pattern: PROVIDER_OUTPUT_SINCE_PATTERN,
+      expectation: 'a millisecond-precision UTC timestamp such as 2026-10-03T04:52:32.034Z',
+    }],
+    fixedPath: undefined,
+  },
 ]
 
 /** The request facts this policy reads. */
@@ -173,31 +242,61 @@ export function planForward(
     }
   }
   const origin = normalizeBaseUrl(baseUrl)
-  if (entry.pathParam === undefined) {
-    // The caller's query string rides through unchanged: the arena list is the
-    // debate server's own paginated collection endpoint.
-    return { ok: true, plan: { upstreamUrl: `${origin}${UPSTREAM_DEBATES_PATH}${url.search}`, token } }
+  /**
+   * Refuse a declared value that does not carry the shape its row demands.
+   * @param message - caller-facing reason.
+   * @returns the `400` decision to answer with.
+   */
+  const invalid = (message: string): ForwardDecision => ({
+    ok: false,
+    refusal: {
+      status: 400,
+      allow: undefined,
+      payload: { success: false, error: { code: 'INVALID_INPUT', message } },
+    },
+  })
+
+  let path = entry.fixedPath
+  if (entry.pathParam !== undefined) {
+    const declared = entry.pathParam
+    const value = (url.searchParams.get(declared.name) ?? '').trim()
+    if (value === '') {
+      return invalid(`${entry.path} requires a non-blank ${declared.name} parameter`)
+    }
+    if (declared.pattern !== undefined && !declared.pattern.test(value)) {
+      return invalid(`${entry.path} requires ${declared.name} to be ${declared.expectation}`)
+    }
+    // One ENCODED path segment. The declared pattern already excludes every
+    // separator, so this states the intent where the URL is finally built rather
+    // than being the only thing standing between a caller and the upstream path.
+    path = `${UPSTREAM_DEBATES_PATH}/${encodeURIComponent(value)}${entry.suffix}`
   }
-  const value = url.searchParams.get(entry.pathParam)
-  if (value === null || value.trim() === '') {
-    return {
-      ok: false,
-      refusal: {
-        status: 400,
-        allow: undefined,
-        payload: {
-          success: false,
-          error: { code: 'INVALID_INPUT', message: `${entry.path} requires a non-blank ${entry.pathParam} parameter` },
-        },
-      },
+  if (path === undefined) {
+    return invalid(`${entry.path} declares neither a path parameter nor a fixed upstream path`)
+  }
+
+  const upstream = new URL(`${origin}${path}`)
+  if (entry.query === 'passthrough') {
+    // The caller's query string rides through unchanged: the arena list is the
+    // debate server's own paginated collection endpoint, and this row exists to
+    // reach it, not to filter it.
+    upstream.search = url.search
+  } else {
+    // Declared parameters only. Anything else the caller sent is dropped here,
+    // which is what stops a read from being widened into an open proxy.
+    for (const declared of entry.params) {
+      const value = (url.searchParams.get(declared.name) ?? '').trim()
+      // Absent and blank are the same request to the upstream (its own guard is
+      // `if (since)`, false for the empty string), so a blank value is skipped
+      // rather than refused: no silent difference is introduced by doing so.
+      if (value === '') continue
+      if (declared.pattern !== undefined && !declared.pattern.test(value)) {
+        return invalid(`${entry.path} requires ${declared.name} to be ${declared.expectation}`)
+      }
+      upstream.searchParams.set(declared.name, value)
     }
   }
-  // The id becomes one ENCODED path segment, so no value can add a segment or a
-  // query string of its own.
-  return {
-    ok: true,
-    plan: { upstreamUrl: `${origin}${UPSTREAM_DEBATES_PATH}/${encodeURIComponent(value.trim())}`, token },
-  }
+  return { ok: true, plan: { upstreamUrl: upstream.href, token } }
 }
 
 /**

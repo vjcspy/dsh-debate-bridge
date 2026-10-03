@@ -1,5 +1,5 @@
 /**
- * The browser half's client for the three fenced reads.
+ * The browser half's client for the four fenced reads.
  *
  * Every call goes to the Host's own `/api/dsh-debate/…` paths, never to the
  * debate server directly: the channel's admission (the browser cookie, and a
@@ -19,6 +19,8 @@ import {
   DETAIL_ID_PARAM,
   DETAIL_PATH,
   LIST_PATH,
+  PROVIDER_OUTPUT_PATH,
+  PROVIDER_OUTPUT_SINCE_PARAM,
 } from '../../config.ts'
 
 /** One debate as the arena list and the detail envelope both report it. */
@@ -47,6 +49,22 @@ export interface DebateEntry {
   readonly content: string
   readonly seq: number
   readonly createdAt: string
+}
+
+/**
+ * One entry of the running Opponent harness's own output buffer.
+ *
+ * A different vocabulary from {@link DebateEntry}: this is the harness's process
+ * output, not the debate's argument transcript. `timestamp` is fixed-width
+ * millisecond UTC (`new Date().toISOString()`), and `type` is the provider's own
+ * token (`terminal`, `status`, `error`). `content` is presentation, never a
+ * contract: it may carry ANSI escapes and `\r\n`, and the panel treats anything
+ * it does not recognise as plain text.
+ */
+export interface ProviderOutputEntry {
+  readonly timestamp: string
+  readonly type: string
+  readonly content: string
 }
 
 /** One debate's full transcript. */
@@ -161,11 +179,16 @@ function decodeEntry(value: unknown): DebateEntry | undefined {
  * The debate server wraps every answer as `{ success, data }` and every failure
  * as `{ success: false, error: { code, message } }`; a refusal's message is
  * carried through so the board can show the server's own reason.
+ *
+ * Transport is deliberately separated from shape: `data` comes back as `unknown`
+ * and each fetcher validates what it expects. The arena list and the detail read
+ * carry an object; the provider-output read carries an ARRAY, which an
+ * object-only reader would reject at both runtime and type level.
  * @param path - fenced pathname, query string included.
  * @param signal - abort signal owned by the caller's effect.
- * @returns the decoded `data` object, or the failure to report.
+ * @returns the undecoded `data` payload, or the failure to report.
  */
-async function readEnvelope(path: string, signal: AbortSignal): Promise<TransportResult<Record<string, unknown>>> {
+async function readEnvelope(path: string, signal: AbortSignal): Promise<TransportResult<unknown>> {
   let response: Response
   try {
     response = await fetch(path, { headers: { accept: 'application/json' }, signal })
@@ -186,7 +209,7 @@ async function readEnvelope(path: string, signal: AbortSignal): Promise<Transpor
   if (!response.ok) {
     return { ok: false, failure: { kind: 'refused', status: response.status, message: readErrorMessage(body, response.status) } }
   }
-  if (!isRecord(body) || body['success'] !== true || !isRecord(body['data'])) {
+  if (!isRecord(body) || body['success'] !== true || !('data' in body)) {
     return { ok: false, failure: { kind: 'malformed', status: response.status, message: 'the envelope carried no data' } }
   }
   return { ok: true, value: body['data'] }
@@ -226,11 +249,15 @@ export async function fetchArena(offset: number, signal: AbortSignal): Promise<T
   const query = new URLSearchParams({ limit: String(ARENA_PAGE_LIMIT), offset: String(offset) })
   const envelope = await readEnvelope(`${LIST_PATH}?${query.toString()}`, signal)
   if (!envelope.ok) return envelope
-  const rows = envelope.value['debates']
+  const data = envelope.value
+  if (!isRecord(data)) {
+    return { ok: false, failure: { kind: 'malformed', status: 200, message: 'the arena page carried no debates array' } }
+  }
+  const rows = data['debates']
   if (!Array.isArray(rows)) {
     return { ok: false, failure: { kind: 'malformed', status: 200, message: 'the arena page carried no debates array' } }
   }
-  const total = envelope.value['total']
+  const total = data['total']
   return {
     ok: true,
     value: {
@@ -250,17 +277,21 @@ export async function fetchDebate(debateId: string, signal: AbortSignal): Promis
   const query = new URLSearchParams({ [DETAIL_ID_PARAM]: debateId })
   const envelope = await readEnvelope(`${DETAIL_PATH}?${query.toString()}`, signal)
   if (!envelope.ok) return envelope
-  const debate = decodeDebate(envelope.value['debate'])
+  const data = envelope.value
+  if (!isRecord(data)) {
+    return { ok: false, failure: { kind: 'malformed', status: 200, message: 'the transcript carried no readable debate' } }
+  }
+  const debate = decodeDebate(data['debate'])
   if (debate === undefined) {
     return { ok: false, failure: { kind: 'malformed', status: 200, message: 'the transcript carried no readable debate' } }
   }
-  const rows = envelope.value['arguments']
+  const rows = data['arguments']
   const entries = Array.isArray(rows)
     ? rows.map(decodeEntry).filter((entry): entry is DebateEntry => entry !== undefined)
     : []
   return {
     ok: true,
-    value: { debate, motion: decodeEntry(envelope.value['motion']) ?? null, entries },
+    value: { debate, motion: decodeEntry(data['motion']) ?? null, entries },
   }
 }
 
@@ -277,9 +308,62 @@ export async function fetchAttachment(sessionId: string, signal: AbortSignal): P
   const query = new URLSearchParams({ [ATTACH_SESSION_PARAM]: sessionId })
   const envelope = await readEnvelope(`${ATTACH_PATH}?${query.toString()}`, signal)
   if (!envelope.ok) return envelope
-  const debateId = envelope.value['debateId']
+  const data = envelope.value
+  if (!isRecord(data)) {
+    return { ok: false, failure: { kind: 'malformed', status: 200, message: 'the attachment answer carried no debateId' } }
+  }
+  const debateId = data['debateId']
   if (debateId !== null && typeof debateId !== 'string') {
     return { ok: false, failure: { kind: 'malformed', status: 200, message: 'the attachment answer carried no debateId' } }
   }
   return { ok: true, value: { debateId } }
+}
+
+/**
+ * Decode one provider-output entry.
+ * @param value - candidate entry.
+ * @returns the entry, or `undefined` when it is not the declared shape.
+ */
+function decodeProviderOutputEntry(value: unknown): ProviderOutputEntry | undefined {
+  if (!isRecord(value)) return undefined
+  const timestamp = stringField(value, 'timestamp')
+  const type = stringField(value, 'type')
+  const content = stringField(value, 'content')
+  if (timestamp === null || type === null || content === null) return undefined
+  return { timestamp, type, content }
+}
+
+/**
+ * Read the running Opponent's own output buffer.
+ *
+ * `since` is exclusive upstream and optional here: omitting it asks for the whole
+ * buffer, which is what opening a collapsed panel needs. A `400` comes back
+ * rather than an empty list when the watermark is malformed — the host refuses
+ * such a value instead of forwarding it, precisely so an invalid watermark cannot
+ * look like an idle harness.
+ *
+ * A malformed ROW is dropped while the rest of the array survives, matching this
+ * module's tolerance elsewhere: one odd entry must not blank the transcript.
+ * @param debateId - the debate whose Opponent is being watched.
+ * @param since - watermark to resume from, or `undefined` for the whole buffer.
+ * @param signal - abort signal owned by the caller's effect.
+ * @returns the decoded entries, or the failure to report.
+ */
+export async function fetchProviderOutput(
+  debateId: string,
+  since: string | undefined,
+  signal: AbortSignal,
+): Promise<TransportResult<readonly ProviderOutputEntry[]>> {
+  const query = new URLSearchParams({ [DETAIL_ID_PARAM]: debateId })
+  if (since !== undefined) query.set(PROVIDER_OUTPUT_SINCE_PARAM, since)
+  const envelope = await readEnvelope(`${PROVIDER_OUTPUT_PATH}?${query.toString()}`, signal)
+  if (!envelope.ok) return envelope
+  const rows = envelope.value
+  if (!Array.isArray(rows)) {
+    return { ok: false, failure: { kind: 'malformed', status: 200, message: 'the provider output was not an entry list' } }
+  }
+  return {
+    ok: true,
+    value: rows.map(decodeProviderOutputEntry).filter((entry): entry is ProviderOutputEntry => entry !== undefined),
+  }
 }
