@@ -109,7 +109,7 @@ describe('identity', () => {
     expect(manifest.description).not.toContain('Registers three')
     // Pinned so a version move is deliberate: the profile refresh that follows a
     // behaviour change is `remove` + `add`, and this manifest is what it reads.
-    expect(manifest.version).toBe('0.4.0')
+    expect(manifest.version).toBe('0.4.1')
   })
 
   test('BOTH halves exist, and the profile can load ./client', () => {

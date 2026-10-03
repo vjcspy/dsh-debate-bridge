@@ -217,7 +217,7 @@ export function DebateArenaBody(props: DebateArenaBodyProps): ReactElement {
     elision: TRANSCRIPT_ENTRY_ELISION,
     backoffMs: TRANSCRIPT_SINCE_BACKOFF_MS,
   }))
-  const [providerOpen, setProviderOpen] = useState(false)
+  const [providerOpen, setProviderOpen] = useState(true)
   const [provider, setProvider] = useState<TranscriptSnapshot>(() => providerBuffer.current.snapshot())
   const [providerFailure, setProviderFailure] = useState<TransportFailure | undefined>(undefined)
 
