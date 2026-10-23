@@ -447,7 +447,9 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
   await ctx.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
   await ctx.loader.await()
 
-  composition.port = ctx.webServer.port
+  const port = ctx.webServer.port
+  if (port === undefined) throw new Error('composition harness: the WebServer listener has not bound a port after loader readiness')
+  composition.port = port
   const previousDispose = composition.dispose
   composition.dispose = async () => {
     await ctx.fiber.dispose()
