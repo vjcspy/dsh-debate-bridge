@@ -6,12 +6,20 @@
  * server cannot enumerate it, so the Settings editor asks over the loopback
  * route this module backs.
  *
- * `buildModelCatalog` is the SAME function the Web GUI's `/model` popup uses
- * through the `session/modelCatalog` RPC, deliberately: the operator's pick-list
- * and the GUI's picker are then one projection and cannot disagree. It also
- * already isolates per-provider failures (`listModels` may be network-bound for a
+ * The catalog comes from the host's own `sessionController.modelCatalog()`, the
+ * SAME method the Web GUI's `/model` popup reaches through the
+ * `session/modelCatalog` RPC, deliberately: the operator's pick-list and the
+ * GUI's picker are then one projection and cannot disagree. It also already
+ * isolates per-provider failures (`listModels` may be network-bound for a
  * third-party adapter), so a broken provider degrades to a reported failure
  * rather than taking the whole list down.
+ *
+ * It is read through the controller SERVICE, never through a package value
+ * import: upstream `0c23ad233d` removed the `buildModelCatalog` re-export from
+ * the package root, and a named import of a missing export fails module linking,
+ * which took every route of this plugin down with it. Only a type import of
+ * `SessionController` remains; it erases at build, yet still fails `check` if
+ * the method's signature changes.
  *
  * It does NOT read `~/.dsh/plugins/subscriptions/models.json`: that file is a
  * third-party plugin's private discovery cache for its own providers, silent by
@@ -21,7 +29,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { buildModelCatalog } from '@deepseek-ai/dsh-api-session-controller'
+import type { SessionController } from '@deepseek-ai/dsh-api-session-controller'
 // Side-effect type import: declares the `llm` member this module reads.
 import type {} from '@deepseek-ai/dsh-llm'
 import { errorChain } from '@deepseek-ai/dsh-llm'
@@ -60,9 +68,8 @@ export interface ModelCatalogResponse {
 export async function listProviderModels(ctx: Context): Promise<ModelCatalogResponse> {
   try {
     if (readOptionalService<LlmService>(ctx, 'llm') === undefined) {
-      // `buildModelCatalog` dereferences `ctx.llm` unguarded, so a deployment
-      // that mounts no LLM service is REPORTED rather than thrown: the operator
-      // must still be able to open Settings and type a route by hand.
+      // A deployment that mounts no LLM service is REPORTED rather than thrown:
+      // the operator must still be able to open Settings and type a route by hand.
       return {
         models: [],
         failures: [{
@@ -72,7 +79,22 @@ export async function listProviderModels(ctx: Context): Promise<ModelCatalogResp
         }],
       }
     }
-    const catalog = await buildModelCatalog(ctx)
+    const controller = readOptionalService<ModelCatalogSource>(ctx, 'sessionController')
+    if (controller === undefined) {
+      // The models verb is auxiliary, so a host without a session controller is
+      // reported here rather than gating every route on it at activation.
+      return {
+        models: [],
+        failures: [{
+          id: '',
+          name: 'dsh',
+          message: 'model catalog unavailable: this host mounts no sessionController service',
+        }],
+      }
+    }
+    // Called ON the controller, so the catalog is computed in the controller's
+    // own context (its injected `llm` and `agentDefaultModel`), not in this one.
+    const catalog = await controller.modelCatalog()
     return {
       models: catalog.groups.flatMap((group) => group.models.map((model) => ({
         value: `${group.id}/${model.id}`,
@@ -95,6 +117,9 @@ export async function listProviderModels(ctx: Context): Promise<ModelCatalogResp
     }
   }
 }
+
+/** The one `sessionController` method this module reads, resolved optionally. */
+type ModelCatalogSource = Pick<SessionController, 'modelCatalog'>
 
 /** The `llm` service as this module needs it, resolved optionally. */
 interface LlmService {

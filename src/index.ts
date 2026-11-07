@@ -90,18 +90,15 @@ export const name = 'dsh-debate-bridge'
  * that mounts no agent presets must not mount this bridge either, because such
  * a host cannot produce a Web-UI-equivalent session at all.
  *
- * `llm` IS required, and that is forced by the Cordis access guard rather than by
- * preference: the models verb hands `ctx` to `buildModelCatalog`, which
- * dereferences `ctx.llm.listProviders()` / `.listModels()` / `.resolveModelInfo()`
- * (and `ctx.agentDefaultModel`), and the context proxy refuses any property whose
- * service is not injected — measured on a real `web`-profile boot as
- * `cannot get property "llm" without inject`. An UNGUARDED read
- * (`ctx.reflect.get('llm', false)`) yields the service object, but the forwarded
- * access still trips the guard, so no optional-read trick can substitute. The
- * consequence is intended and explicit: a composition that mounts no LLM service
- * must not mount this bridge, because such a host can neither enumerate model
- * routes nor create a runnable session. The `web` profile mounts
- * `@deepseek-ai/dsh-llm`.
+ * `llm` IS required, by policy: a composition that mounts no LLM service must
+ * not mount this bridge, because such a host can neither enumerate model routes
+ * nor create a runnable session. The `web` profile mounts `@deepseek-ai/dsh-llm`.
+ * It was first forced by the Cordis access guard, when the models verb handed
+ * THIS plugin's `ctx` to `buildModelCatalog` (measured on a real `web`-profile
+ * boot as `cannot get property "llm" without inject`). The verb now reads the
+ * catalog through `sessionController.modelCatalog()`, which computes it in the
+ * controller's own context; whether the guard alone would still demand `llm`
+ * here is unmeasured, and dropping it would change when the bridge activates.
  *
  * `connection` carries the browser half's three fenced reads, and is required for
  * the same mechanical reason: a route registered on an uninjected service is

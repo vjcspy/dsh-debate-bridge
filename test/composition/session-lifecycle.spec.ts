@@ -312,12 +312,10 @@ test('an UNLISTED model inside a known provider is accepted (the catalog is advi
 }, 60_000)
 
 test('a composition that mounts no llm service does NOT mount the bridge (loud, intended)', async () => {
-  // `llm` is a REQUIRED inject, forced by the Cordis access guard: the models verb
-  // hands `ctx` to `buildModelCatalog`, which dereferences `ctx.llm`, and a
-  // context without that service injected refuses the property outright. Such a
-  // host can neither enumerate model routes nor create a runnable session, so
-  // refusing to activate is the honest outcome — and it is observable here as
-  // "the routes never registered" rather than as an empty catalog.
+  // `llm` is a REQUIRED inject, by policy: a host without that service can
+  // neither enumerate model routes nor create a runnable session, so refusing to
+  // activate is the honest outcome, and it is observable here as "the routes
+  // never registered" rather than as an empty catalog.
   const built: unknown = await import(pathToFileURL(builtEntry).href)
   const ctx = new Context()
   const paths: string[] = []

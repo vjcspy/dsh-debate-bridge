@@ -396,6 +396,35 @@ export async function boot(options: BootOptions = {}): Promise<Composition> {
   // that mounts none cannot be asked about routes, and must not refuse them.
   if (options.withLlm ?? true) provide(ctx, 'llm', llmMethods)
 
+  // A stub session controller: the models verb reads the catalog through the
+  // host's `sessionController.modelCatalog()`, which upstream computes from the
+  // `llm` registry. This mirrors that projection over the stub registry above,
+  // recomputed on EVERY call because specs re-script the providers after the
+  // mount. Mounted with the registry, as the real controller injects `llm`.
+  if (options.withLlm ?? true) {
+    provide(ctx, 'sessionController', {
+      async modelCatalog() {
+        record('sessionController.modelCatalog')
+        const entries = await Promise.all(llmMethods.listProviders().map(async (provider) => {
+          try {
+            const models = await llmMethods.listModels(provider.id)
+            return { group: { id: provider.id, name: provider.name, models } }
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error)
+            return { failure: { id: provider.id, name: provider.name, message } }
+          }
+        }))
+        const groups = entries.flatMap((entry) => entry.group === undefined || entry.group.models.length === 0 ? [] : [entry.group])
+        return {
+          default: { ...composition.defaultModel },
+          routableProviders: groups.map((group) => group.id),
+          groups,
+          failures: entries.flatMap((entry) => entry.failure === undefined ? [] : [entry.failure]),
+        }
+      },
+    })
+  }
+
   // The real Loader over a real `cordis.yml`, importing the BUILT artifact.
   const built: unknown = await import(pathToFileURL(builtEntry).href)
   const Loader = (await import('@deepseek-ai/cordis-plugin-loader')).default

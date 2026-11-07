@@ -109,7 +109,7 @@ describe('identity', () => {
     expect(manifest.description).not.toContain('Registers three')
     // Pinned so a version move is deliberate: the profile refresh that follows a
     // behaviour change is `remove` + `add`, and this manifest is what it reads.
-    expect(manifest.version).toBe('0.4.1')
+    expect(manifest.version).toBe('0.4.2')
   })
 
   test('BOTH halves exist, and the profile can load ./client', () => {
@@ -187,10 +187,10 @@ describe('dependency symmetry', () => {
     // Required, by contrast: it is the only source of a complete provider+model
     // route, and a session created without one dies on its first turn.
     expect(manifest.peerDependencies['@deepseek-ai/dsh-agent-default-model']).toBeDefined()
-    // Also required, for a mechanical reason: the models verb forwards `ctx` to
-    // `buildModelCatalog`, which dereferences `ctx.llm`, and Cordis refuses an
-    // uninjected service with `cannot get property "llm" without inject` — so no
-    // optional-read trick can stand in for the inject.
+    // Also required, by policy: a host with no LLM service can neither enumerate
+    // model routes nor create a runnable session, so the bridge must not mount
+    // there. (The models verb reads the catalog through `sessionController`, which
+    // computes it in its own context.)
     expect(manifest.peerDependencies['@deepseek-ai/dsh-llm']).toBeDefined()
     // And the fence: the browser half's reads are registered on the shared
     // `/api` channel, which only exists as an injected service.
