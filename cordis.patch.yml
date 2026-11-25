@@ -4,16 +4,18 @@
 # The plugin provides TWO surfaces.
 #
 # 1. A loopback-only HTTP bridge the debate server's `dsh` opponent provider
-#    calls. Four routes, all OUTSIDE `/api` so no cookie or Origin fence applies
+#    calls. Five routes, all OUTSIDE `/api` so no cookie or Origin fence applies
 #    (the fence is applied per-channel in `HostConnectionService` and the mux
 #    upgrade, not globally):
 #
 #      POST /dsh-debate/opponent         { debateId, sessionId?, title, prompt,
 #                                          model?, agentPreset, permissionPreset,
 #                                          workspacePath } -> { sessionId }
+#      POST /dsh-debate/opponent/v2      start body with required model and reasoningEffort
+#                                          -> { sessionId, reasoningEffort }
 #      POST /dsh-debate/opponent/stop    { sessionId } -> { stopped }
 #      POST /dsh-debate/opponent/status  { sessionId } -> { live, idle, lastActivityAt }
-#      GET  /dsh-debate/models           -> { models, failures }
+#      GET  /dsh-debate/models           -> { supportsReasoningEffort, models, failures }
 #
 #    The start verb creates the Session IN PROCESS — `workspaceRegistry.create` ->
 #    `agents.create({ sessionId, meta: { cwd: workspace.path, agentPreset }, agentOptions, setup })` ->

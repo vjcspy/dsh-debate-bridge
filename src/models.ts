@@ -40,6 +40,7 @@ export interface ProviderModelOption {
   /** The wire value the routing rule stores: `provider/model`. */
   readonly value: string
   /** What the operator reads. */
+  readonly reasoningEfforts?: readonly { readonly id: string; readonly name: string }[]
   readonly label: string
 }
 
@@ -52,6 +53,7 @@ export interface ModelCatalogFailure {
 
 /** The models verb's response body. */
 export interface ModelCatalogResponse {
+  readonly supportsReasoningEffort: true
   readonly models: readonly ProviderModelOption[]
   readonly failures: readonly ModelCatalogFailure[]
 }
@@ -71,6 +73,7 @@ export async function listProviderModels(ctx: Context): Promise<ModelCatalogResp
       // A deployment that mounts no LLM service is REPORTED rather than thrown:
       // the operator must still be able to open Settings and type a route by hand.
       return {
+        supportsReasoningEffort: true,
         models: [],
         failures: [{
           id: '',
@@ -84,6 +87,7 @@ export async function listProviderModels(ctx: Context): Promise<ModelCatalogResp
       // The models verb is auxiliary, so a host without a session controller is
       // reported here rather than gating every route on it at activation.
       return {
+        supportsReasoningEffort: true,
         models: [],
         failures: [{
           id: '',
@@ -96,9 +100,13 @@ export async function listProviderModels(ctx: Context): Promise<ModelCatalogResp
     // own context (its injected `llm` and `agentDefaultModel`), not in this one.
     const catalog = await controller.modelCatalog()
     return {
+      supportsReasoningEffort: true,
       models: catalog.groups.flatMap((group) => group.models.map((model) => ({
         value: `${group.id}/${model.id}`,
         label: `${model.name} (${group.id})`,
+        ...model.reasoning === undefined ? {} : {
+          reasoningEfforts: model.reasoning.efforts.map(({ id, name }) => ({ id, name })),
+        },
       }))),
       failures: catalog.failures.map((failure) => ({
         id: failure.id,
@@ -109,6 +117,7 @@ export async function listProviderModels(ctx: Context): Promise<ModelCatalogResp
   } catch (error: unknown) {
     return {
       models: [],
+      supportsReasoningEffort: true,
       failures: [{
         id: '',
         name: 'dsh',
@@ -147,7 +156,7 @@ interface ReflectSurface {
  * @param name - service name.
  * @returns the service value, or `undefined`.
  */
-function readOptionalService<T>(ctx: Context, name: string): T | undefined {
+export function readOptionalService<T>(ctx: Context, name: string): T | undefined {
   const reflect = (ctx as unknown as { reflect?: ReflectSurface }).reflect
   if (reflect === undefined) return undefined
   try {

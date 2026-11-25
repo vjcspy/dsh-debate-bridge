@@ -51,6 +51,7 @@ import {
   SessionAlreadyExistsError,
   SessionPersistenceNotFoundError,
 } from '@deepseek-ai/dsh-session-persistence'
+import { readOptionalService } from './models.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { buildSessionTitle, deriveSessionId, type StartRequest } from './request.ts'
 import { DEBATE_OPPONENT_SOURCE_KIND } from './source.ts'
@@ -83,7 +84,21 @@ export interface OpenSessionInput {
    * non-blank. Resolving in the ROUTE (before anything is created) is what keeps
    * a half-configured host from minting a session whose every turn dies.
    */
-  readonly modelRoute: { readonly provider: string; readonly model: string }
+  readonly modelRoute: ModelSelection
+}
+
+export class SessionSelectionConflict extends Error {}
+
+function requireStoredSelection(ctx: Context, agent: Agent, expected: ModelSelection): void {
+  if (expected.reasoningEffort === undefined) return
+  const projections = readOptionalService<Context['sessionProjections']>(ctx, 'sessionProjections')
+  const selection = projections?.snapshot(agent.session, ['modelSelection']).values.modelSelection as
+    { readonly next: ModelSelection | null } | undefined
+  const next = selection?.next
+  if (next?.provider !== expected.provider || next.model !== expected.model
+    || next.reasoningEffort !== expected.reasoningEffort) {
+    throw new SessionSelectionConflict('Session has no matching recorded next model and reasoning effort; use a new Session or explicitly align its selection')
+  }
 }
 
 /** Edge-derived status of one session, as reported by `POST /dsh-debate/opponent/status`. */
@@ -409,19 +424,17 @@ export function createDebateSessions(log: SessionLog): DebateSessions {
           cwd: workspace.path,
           agentPreset: agentPresetId,
         },
-        agentOptions: { provider: modelRoute.provider, model: modelRoute.model },
+        agentOptions: modelRoute,
         setup: async (agentCtx) => {
           await ctx.agentPresets.mount(agentCtx, agentPresetId)
-          installInitialModelSelection(agentCtx, {
-            provider: modelRoute.provider,
-            model: modelRoute.model,
-          })
+          if (modelRoute.reasoningEffort === undefined) installInitialModelSelection(agentCtx, modelRoute)
         },
       })
       await workspace.attachSession(sessionId)
       attached = true
       ctx.permissionPresets.set(handle.agent.session, permissionPreset)
       ctx.sessionTitle.rename(handle.agent.session, buildSessionTitle(request.title))
+      if (modelRoute.reasoningEffort !== undefined) handle.agent.model.select(modelRoute)
       watch(handle.agent)
       prompt(handle.agent, request)
       return sessionId
@@ -458,6 +471,7 @@ export function createDebateSessions(log: SessionLog): DebateSessions {
       // start verb with the same id and a different prompt, and lands here.
       const live = ctx.agents.get(sessionId)
       if (live !== undefined) {
+        requireStoredSelection(ctx, live, input.modelRoute)
         watch(live)
         prompt(live, request)
         return sessionId
@@ -470,22 +484,32 @@ export function createDebateSessions(log: SessionLog): DebateSessions {
       // same on every resume (`packages/api/session-controller/src/agent.ts:437-441,
       // 469-473`): a resumed agent is re-published and must re-join its preset,
       // or it comes back on the empty global layer.
+      let resumed: AgentHandle | undefined
       try {
-        const handle = await ctx.agents.resume({
+        resumed = await ctx.agents.resume({
           resumeSessionId: sessionId,
           agentOptions: { provider: input.modelRoute.provider, model: input.modelRoute.model },
           setup: async (agentCtx) => {
             await ctx.agentPresets.mount(agentCtx, input.agentPresetId)
-            installInitialModelSelection(agentCtx, {
+            if (input.modelRoute.reasoningEffort === undefined) installInitialModelSelection(agentCtx, {
               provider: input.modelRoute.provider,
               model: input.modelRoute.model,
             })
           },
         })
-        watch(handle.agent)
-        prompt(handle.agent, request)
+        requireStoredSelection(ctx, resumed.agent, input.modelRoute)
+        watch(resumed.agent)
+        prompt(resumed.agent, request)
         return sessionId
       } catch (error: unknown) {
+        if (resumed !== undefined && input.modelRoute.reasoningEffort !== undefined) {
+          try {
+            await resumed.dispose()
+          } catch (disposeError: unknown) {
+            log.warn(`dsh-debate-bridge: resume disposal for "${sessionId}" failed: ${errorChain(disposeError)}`)
+          }
+          throw error
+        }
         if (!isAbsentSession(error)) throw error
       }
 
@@ -498,6 +522,7 @@ export function createDebateSessions(log: SessionLog): DebateSessions {
         if (!isOccupiedSession(error)) throw error
         const winner = ctx.agents.get(sessionId)
         if (winner === undefined) throw error
+        requireStoredSelection(ctx, winner, input.modelRoute)
         watch(winner)
         prompt(winner, request)
         return sessionId

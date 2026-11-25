@@ -35,6 +35,7 @@ import type { BashEnvContributor } from '@deepseek-ai/dsh-shell-env'
  * so the OpenCode-side name (`AWEAVE_PROPOSER_MODEL`) is unavailable here.
  */
 export const DSH_PROPOSER_MODEL_ENV = 'DSH_PROPOSER_MODEL' as const
+export const DSH_PROPOSER_REASONING_EFFORT_ENV = 'DSH_PROPOSER_REASONING_EFFORT' as const
 
 /**
  * Stable contributor name. The registry keys both its duplicate detection and
@@ -58,6 +59,9 @@ export function createProposerModelContributor(): BashEnvContributor {
   return {
     name: PROPOSER_MODEL_CONTRIBUTOR,
     variables: {
+      [DSH_PROPOSER_REASONING_EFFORT_ENV]: {
+        description: 'Non-adapter-defaulted reasoning effort of the active DeepSeek Harness request.',
+      },
       [DSH_PROPOSER_MODEL_ENV]: {
         description: 'Active model route (`provider/model`) of the DeepSeek Harness session running this command.',
       },
@@ -66,11 +70,19 @@ export function createProposerModelContributor(): BashEnvContributor {
       // The header, once it exists, is authoritative even when it is
       // incomplete: falling back to `options` there would publish a route the
       // session has already left.
-      const active = execution.agent?.session.requestHeader()?.config
+      const header = execution.agent?.session.requestHeader()
+      const active = header?.config
       const route = active === undefined
         ? routeOf(execution.agent?.options)
         : routeOf(active)
-      return route === undefined ? {} : { [DSH_PROPOSER_MODEL_ENV]: route }
+      if (route === undefined) return {}
+      const effort = active?.reasoningEffort
+      return {
+        [DSH_PROPOSER_MODEL_ENV]: route,
+        ...typeof effort === 'string' && effort.trim() !== '' && header?.adapterDefaults?.reasoningEffort !== true
+          ? { [DSH_PROPOSER_REASONING_EFFORT_ENV]: effort }
+          : {},
+      }
     },
   }
 }

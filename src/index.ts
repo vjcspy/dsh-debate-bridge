@@ -52,6 +52,7 @@ import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-shell-env'
 import type {} from '@deepseek-ai/dsh-workspace'
 import { brandString } from '@deepseek-ai/dsh-brand'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm/brand'
 import { errorChain } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { createAttachRegistry } from './host/attach-registry.ts'
@@ -62,12 +63,13 @@ import { createRouteHost, listProviderModels } from './models.ts'
 import {
   parseJsonObject,
   parseStartRequest,
+  parseStartRequestV2,
   parseStatusRequest,
   parseStopRequest,
   type StartRequest,
 } from './request.ts'
 import type { Config } from './schema.ts'
-import { createDebateSessions, resolveModelRoute, type SessionStatus } from './session.ts'
+import { createDebateSessions, resolveModelRoute, SessionSelectionConflict, type SessionStatus } from './session.ts'
 import { createProposerModelContributor, DSH_PROPOSER_MODEL_ENV } from './shell-env.ts'
 
 export { Config } from './schema.ts'
@@ -112,6 +114,7 @@ export const LOOPBACK_HOST = '127.0.0.1'
 
 /** Exact path of the open/adopt verb. */
 export const OPEN_ROUTE = '/dsh-debate/opponent'
+export const OPEN_V2_ROUTE = '/dsh-debate/opponent/v2'
 
 /** Exact path of the stop verb. */
 export const STOP_ROUTE = '/dsh-debate/opponent/stop'
@@ -259,7 +262,7 @@ async function readValidated<T>(
 }
 
 /**
- * Register the four bridge routes and the browser half's Host side, or nothing
+ * Register the five bridge routes and the browser half's Host side, or nothing
  * at all.
  *
  * Registers nothing unless the resolved `webServer` host is exactly
@@ -333,44 +336,70 @@ export function apply(ctx: Context, config: Config): void {
     return () => { dispose() }
   }, 'dsh-debate-bridge: create observer')
 
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: OPEN_ROUTE,
-    handler: async (req, res) => {
-      if (req.method !== 'POST') {
-        sendMethodNotAllowed(res, 'POST')
-        return
-      }
-      const request = await readValidated(req, res, parseStartRequest)
-      if (request === undefined) return
-      const presets = await resolvePresets(ctx, request)
-      if (!presets.ok) {
-        sendJson(res, 400, { error: presets.error })
-        return
-      }
-      // Resolved BEFORE anything is created: a route the loop cannot run must
-      // refuse the request, never mint a session whose every turn dies. The
-      // provider half is checked against the host's live registry — the harness
-      // itself accepts any route and swallows `NO_ADAPTER`.
-      const route = await resolveModelRoute(ctx, request, routeHost)
-      if (!route.ok) {
-        sendJson(res, 400, { error: route.error })
-        return
-      }
-      try {
-        const sessionId = await sessions.open(ctx, {
-          request,
-          agentPresetId: presets.value.agentPresetId,
-          permissionPreset: presets.value.permissionPreset,
-          modelRoute: route.value,
-        })
-        sendJson(res, 200, { sessionId })
-      } catch (error: unknown) {
-        // Never a thrown 500 without a body the caller can log.
-        sendJson(res, 500, { error: errorChain(error) })
-      }
-    },
-  }), `dsh-debate-bridge: POST ${OPEN_ROUTE}`)
+  for (const path of [OPEN_ROUTE, OPEN_V2_ROUTE]) {
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'exact',
+      path,
+      handler: async (req, res) => {
+        if (req.method !== 'POST') {
+          sendMethodNotAllowed(res, 'POST')
+          return
+        }
+        const v2 = path === OPEN_V2_ROUTE
+        const request = await readValidated<StartRequest & { readonly reasoningEffort?: string }>(
+          req, res, v2 ? parseStartRequestV2 : parseStartRequest,
+        )
+        if (request === undefined) return
+        const presets = await resolvePresets(ctx, request)
+        if (!presets.ok) {
+          sendJson(res, 400, { error: presets.error })
+          return
+        }
+        // Resolved BEFORE anything is created: a route the loop cannot run must
+        // refuse the request, never mint a session whose every turn dies. The
+        // provider half is checked against the host's live registry — the harness
+        // itself accepts any route and swallows `NO_ADAPTER`.
+        const route = await resolveModelRoute(ctx, request, v2 ? null : routeHost)
+        if (!route.ok) {
+          sendJson(res, 400, { error: route.error })
+          return
+        }
+        try {
+          const reasoningEffort = request.reasoningEffort === undefined
+            ? undefined
+            : ReasoningEffortId(request.reasoningEffort)
+          const modelRoute = { ...route.value, ...reasoningEffort === undefined ? {} : { reasoningEffort } }
+          if (reasoningEffort !== undefined) {
+            const accepted = await ctx.llm.resolveCallConfig(modelRoute)
+            if (accepted.provider !== modelRoute.provider || accepted.model !== modelRoute.model
+              || accepted.reasoningEffort !== reasoningEffort) {
+              sendJson(res, 400, { code: 'UNSUPPORTED_REASONING_EFFORT', error: 'Adapter did not confirm the requested route and reasoning effort' })
+              return
+            }
+          }
+          const sessionId = await sessions.open(ctx, {
+            request,
+            agentPresetId: presets.value.agentPresetId,
+            permissionPreset: presets.value.permissionPreset,
+            modelRoute,
+          })
+          sendJson(res, 200, { sessionId, ...reasoningEffort === undefined ? {} : { reasoningEffort } })
+        } catch (error: unknown) {
+          if (v2 && error instanceof SessionSelectionConflict) {
+            sendJson(res, 409, { code: 'SESSION_SELECTION_CONFLICT', error: error.message })
+            return
+          }
+          const code = (error as { code?: unknown } | null)?.code
+          if (v2 && (code === 'NO_ADAPTER' || code === 'UNSUPPORTED_REASONING_EFFORT')) {
+            sendJson(res, 400, { code, error: errorChain(error) })
+            return
+          }
+          // Never a thrown 500 without a body the caller can log.
+          sendJson(res, 500, { error: errorChain(error) })
+        }
+      },
+  }), `dsh-debate-bridge: POST ${path}`)
+  }
 
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -427,6 +456,7 @@ export function apply(ctx: Context, config: Config): void {
         // Unreachable (the reader catches internally) but kept so no code path
         // can produce a thrown 500 without a machine-readable body.
         sendJson(res, 200, {
+          supportsReasoningEffort: true,
           models: [],
           failures: [{ id: '', name: 'dsh', message: errorChain(error) }],
         })

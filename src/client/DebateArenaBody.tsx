@@ -400,7 +400,11 @@ export function DebateArenaBody(props: DebateArenaBodyProps): ReactElement {
                   <Tag tone={stateTone(transcript.debate.state)}>{transcript.debate.state}</Tag>
                   <span>
                     {t('transcript.proposer', {
-                      provider: transcript.debate.proposerProvider ?? t('transcript.unknownProvider'),
+                      provider: [
+                        transcript.debate.proposerProvider ?? t('transcript.unknownProvider'),
+                        transcript.debate.proposerModel,
+                        transcript.debate.proposerReasoningEffort,
+                      ].filter(Boolean).join(' · '),
                     })}
                   </span>
                   <span>

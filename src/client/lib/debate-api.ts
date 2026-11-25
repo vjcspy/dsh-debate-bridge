@@ -30,6 +30,8 @@ export interface DebateRow {
   readonly debateType: string
   readonly state: string
   readonly proposerProvider: string | null
+  readonly proposerModel?: string | null
+  readonly proposerReasoningEffort?: string | null
   readonly opponentProvider: string | null
   readonly createdAt: string
   readonly updatedAt: string
@@ -141,12 +143,16 @@ function decodeDebate(value: unknown): DebateRow | undefined {
   const title = stringField(value, 'title')
   const state = stringField(value, 'state')
   if (id === null || title === null || state === null) return undefined
+  const proposerModel = stringField(value, 'proposer_model')
+  const proposerReasoningEffort = stringField(value, 'proposer_reasoning_effort')
   return {
     id,
     title,
     state,
     debateType: stringField(value, 'debate_type') ?? '',
     proposerProvider: stringField(value, 'proposer_provider'),
+    ...proposerModel === null ? {} : { proposerModel },
+    ...proposerReasoningEffort === null ? {} : { proposerReasoningEffort },
     opponentProvider: stringField(value, 'opponent_provider'),
     createdAt: stringField(value, 'created_at') ?? '',
     updatedAt: stringField(value, 'updated_at') ?? '',

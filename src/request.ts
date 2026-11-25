@@ -246,6 +246,21 @@ export function parseStartRequest(body: Record<string, unknown>): Parsed<StartRe
   }
 }
 
+/** Require an explicit route and adapter-owned effort on the v2 path only. */
+export function parseStartRequestV2(body: Record<string, unknown>): Parsed<StartRequest & {
+  readonly model: string
+  readonly reasoningEffort: string
+}> {
+  const common = parseStartRequest(body)
+  if (!common.ok) return common
+  const model = requiredString(body, 'model', MAX_MODEL_CHARS)
+  if ('error' in model) return { ok: false, error: model.error }
+  const effort = requiredString(body, 'reasoningEffort', 128)
+  if ('error' in effort) return { ok: false, error: effort.error }
+  if (body.reasoningEffort !== effort.value) return { ok: false, error: 'reasoningEffort must not have surrounding whitespace' }
+  return { ok: true, value: { ...common.value, model: model.value, reasoningEffort: effort.value } }
+}
+
 /**
  * Validate a `POST /dsh-debate/opponent/stop` body.
  * @param body - the parsed request object.
